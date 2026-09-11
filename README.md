@@ -1,4 +1,15 @@
-# EA_ATR_News (MT5)
+# ATR News Straddle — MT5 EA + TradingView Indicator
+
+กลยุทธ์ **ดักเบรกข่าว (News Straddle Breakout)** ใช้ค่า **ATR** กำหนดระยะ มี 2 ไฟล์:
+
+| ไฟล์ | แพลตฟอร์ม | ใช้ทำอะไร |
+|---|---|---|
+| `EA_ATR_News.mq5` | MetaTrader 5 | เทรดจริง/อัตโนมัติ (วางออเดอร์จริง) |
+| `ATR_News_Straddle.pine` | TradingView (Pine v6) | จำลอง/ดูสถิติ + **ตาราง stat** (Main / By-Day / Daily / Monthly / Settings) |
+
+---
+
+## EA_ATR_News (MT5)
 
 Expert Advisor สำหรับ MetaTrader 5 แนว **ดักเบรกข่าว (News Straddle Breakout)** โดยใช้ค่า **ATR** กำหนดระยะ
 
@@ -56,7 +67,34 @@ Expert Advisor สำหรับ MetaTrader 5 แนว **ดักเบรก
 3. ลาก EA ลงกราฟคู่เงินที่ต้องการ (แนะนำ TF 15M)
 4. ตั้งค่า Inputs ตามตารางด้านบน และเปิด **Algo Trading**
 
-## ข้อควรทราบ
+## ข้อควรทราบ (EA)
 - EA เช็ก stops level ขั้นต่ำของโบรก และเลื่อนราคา pending ให้อัตโนมัติถ้าจำเป็น
 - ทดสอบใน **Strategy Tester / บัญชี Demo** ก่อนใช้จริงเสมอ
 - ยังไม่ได้เปิดโหมด OCO (ลบอีกฝั่งเมื่อไม้แรกทริก) ตามที่ผู้ใช้ต้องการ
+
+---
+
+## ATR_News_Straddle (TradingView / Pine v6)
+
+Indicator สำหรับ **จำลองและดูสถิติ** ของกลยุทธ์เดียวกันบน TradingView พร้อมตาราง stat สไตล์ Luxe
+
+### วิธีใช้
+1. เปิด TradingView → Pine Editor → วางโค้ดจาก `ATR_News_Straddle.pine`
+2. **Add to chart** — แนะนำให้ใช้บน **Timeframe ที่ปิดตรงเวลาข่าว** (เช่น M15 สำหรับข่าว 19:30)
+3. ตั้งค่า News Hour/Minute ให้ตรงกับ **เวลาของกราฟ** (ปรับ Timezone ในกลุ่ม Timezone ได้)
+
+### ตรรกะ
+- ถึงเวลาข่าว + แท่งปิด → วาง Buy Stop / Sell Stop คร่อมราคาปิด (`close ± ATR×EntryMult`)
+- เบรกฝั่งไหนเข้าฝั่งนั้น แต่ละไม้อิสระ ไม่ลบอีกฝั่ง
+- `SL = ATR×SL_Mult`, `TP = ระยะSL×RR`; pending หมดอายุตามนาทีที่ตั้ง
+- ใช้ **Lower TF** ตัดสินว่า TP หรือ SL โดนก่อน เมื่อแท่งเดียวครอบทั้งคู่
+
+### ตาราง Stat
+- **Main** — Trades / Winrate / Net R / Max Streak (+วันที่) / Streak R·Pts / การตั้งค่า ATR·RR / Open·Pending
+- **By-Day** — สรุปราย Sun–Sat (ไฮไลต์วันดีสุด)
+- **Daily Log** — log รายวันของเดือนที่เลือก
+- **Monthly** — สรุปรายเดือน (โหมด Last N Months)
+- **Settings Summary** — สรุปพารามิเตอร์ทั้งหมด
+
+> หมายเหตุ: เป็น indicator สำหรับ *วิเคราะห์/ดูสถิติ* ไม่ใช่ strategy ที่ส่งออเดอร์จริง
+> ผลเป็นการจำลองบนแท่งเทียนในอดีต (historical) เพื่อประเมินกลยุทธ์
