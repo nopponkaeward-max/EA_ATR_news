@@ -105,15 +105,18 @@ statTargetY = input.int(0, title="[Mode 3] Year (0 = current)",
              minval=0, maxval=2100, group="Display & Stats", display=display.none)
 
 // --- Timezone ---
-tzIncr    = input.int(0,      title="UTC (+/-)",              group="Timezone", display=display.none)
-useExchTz = input.bool(false, title=" Use Exchange Timezone", group="Timezone", display=display.none)
+// เวลา News ตีความตามโซนนี้ ค่าเริ่ม = โซนของ Exchange (ตรงกับเวลาบนกราฟเมื่อ
+// ตั้ง Chart Timezone = "Exchange"). ถ้ากราฟคุณตั้งโซนอื่น ให้ปิดตัวนี้แล้วใส่ offset
+useChartTz = input.bool(true, title=" Use Chart Timezone (Exchange)", group="Timezone",
+             tooltip="ON = ใช้โซนเวลาของ Exchange (syminfo.timezone) ซึ่งตรงกับเวลาที่แสดงบนกราฟเมื่อคุณตั้ง Chart Timezone = Exchange\nOFF = ใช้ UTC + offset ด้านล่างแทน", display=display.none)
+tzIncr     = input.int(0, title="UTC (+/-)  [ใช้เมื่อปิด Use Chart Timezone]", group="Timezone", display=display.none)
 
 // ==========================================
 // --- 2. UTILS ---
 // ==========================================
 
-var string tzStr = useExchTz ? syminfo.timezone
-                             : str.format("UTC{0}{1}", tzIncr >= 0 ? "+" : "-", math.abs(tzIncr))
+var string tzStr = useChartTz ? syminfo.timezone
+                              : str.format("UTC{0}{1}", tzIncr >= 0 ? "+" : "-", math.abs(tzIncr))
 
 f_tablePos(string s) =>
     switch s
