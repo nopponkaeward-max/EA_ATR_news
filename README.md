@@ -41,6 +41,18 @@
 > - เปิด One Trade = คุมให้มีชุดเทรดเดียว ณ เวลาหนึ่ง ไม่ซ้อนหลายชุด
 > - EA: นับจาก order/position จริง (ตาม Magic) — Pine: นับจากสถานะจำลอง
 
+### Re-Entry (มีทั้ง EA และ Pine)
+| Input | ผล |
+|---|---|
+| **Re-Entry on SL return** (`InpReentryOn` / `reentryOn`) | เมื่อออเดอร์โดน **SL** แล้วราคา **กลับมาที่จุดเปิดเดิม** → เปิดออเดอร์ถัดไป (Order-2…) ทิศทางเดิม จุดเดิม SL/TP เท่าเดิม |
+| **Max Re-Entries** (`InpReentryMax` / `reentryMax`) | จำนวน re-entry สูงสุด (1 = ถึง Order-2) |
+| **Re-Entry Expire** (`InpReentryExpireMin` / `reentryExpMin`) | นาทีหมดอายุ pending re-entry (0 = รอไม่จำกัด) |
+
+- กลไก: re-entry เป็น **stop order ที่ราคา entry เดิม** → จะทริกเมื่อราคาวิ่งกลับมาแตะจุดเปิด
+- **ป้าย**: ทุกออเดอร์ติดชื่อ `Order-1`, `Order-2`, … (EA = comment, Pine = label บนกราฟ)
+- **สถิติแยกตามออเดอร์**: Pine เพิ่มตาราง **BY ORDER** (Order-1 / Order-2 / … : W-L / WR% / Net R)
+  - EA: แยกผ่านชื่อ comment ของแต่ละออเดอร์ (ดูใน History/Report ของ MT5)
+
 ---
 
 ## EA_ATR_News (MT5)

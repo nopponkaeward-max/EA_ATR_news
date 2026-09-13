@@ -79,7 +79,14 @@ oneTradeOnly = input.bool(false, title="One Trade At A Time", group="Order Manag
 ocoCancel    = input.bool(false, title="OCO — cancel opposite on fill", group="Order Management",
                tooltip="เมื่อฝั่งหนึ่งถูกทริก (เปิดเป็นออเดอร์) ให้ยกเลิก pending อีกฝั่งทันที")
 
+// --- Re-Entry ---
+reentryOn    = input.bool(false, title="Re-Entry on SL return", group="Re-Entry",
+               tooltip="เมื่อออเดอร์โดน SL แล้วราคากลับมาที่จุดเปิดเดิมอีกครั้ง -> เปิดออเดอร์ถัดไป (Order-2, Order-3...) ทิศทางเดิม จุดเดิม")
+reentryMax   = input.int(1, title="Max Re-Entries (1 = ถึง Order-2)", minval=1, maxval=9, group="Re-Entry")
+reentryExpMin = input.int(0, title="Re-Entry Pending Expire (min, 0 = never)", minval=0, group="Re-Entry")
+
 // --- Display & Stats ---
+showOrderTable    = input.bool(true,  title=" Show By-Order Table (Order-1/2/..)", group="Display & Stats", display=display.none)
 showTradePath     = input.bool(true,  title=" Show Trade Path Lines",       group="Display & Stats", display=display.none)
 showPendingDraw   = input.bool(true,  title=" Show Pending Straddle Lines",  group="Display & Stats", display=display.none)
 showStatsTable    = input.bool(true,  title=" Show Stats Table (Main)",     group="Display & Stats", display=display.none)
@@ -112,6 +119,9 @@ dailyTablePos     = input.string("Middle Left",  title="▶ Daily Log Table Posi
                    options=["Top Left","Top Center","Top Right","Middle Left","Middle Right","Bottom Left","Bottom Center","Bottom Right"],
                    group="Display & Stats", display=display.none)
 dayTablePos       = input.string("Middle Right", title="▶ By-Day Table Position",
+                   options=["Top Left","Top Center","Top Right","Middle Left","Middle Right","Bottom Left","Bottom Center","Bottom Right"],
+                   group="Display & Stats", display=display.none)
+orderTablePos     = input.string("Top Right", title="▶ By-Order Table Position",
                    options=["Top Left","Top Center","Top Right","Middle Left","Middle Right","Bottom Left","Bottom Center","Bottom Right"],
                    group="Display & Stats", display=display.none)
 
@@ -250,6 +260,7 @@ var array<bool>  resIsWin   = array.new_bool()
 var array<float> resTradeRR = array.new_float()
 var array<int>   resTime    = array.new_int()
 var array<float> resTpPts   = array.new_float()
+var array<int>   resGen     = array.new_int()    // Order generation (1 = Order-1, 2 = Order-2, ...)
 
 var array<int> dayList = array.new_int()
 int curDayId = year(time,tzStr)*10000 + month(time,tzStr)*100 + dayofmonth(time,tzStr)
@@ -306,6 +317,7 @@ var array<float> pTPd    = array.new<float>()   // TP distance (price)
 var array<int>   pExpire = array.new_int()       // expire time (ms, 0 = never)
 var array<int>   pBar    = array.new_int()
 var array<int>   pTime   = array.new_int()
+var array<int>   pGen    = array.new_int()       // order generation (1,2,3..)
 
 // active trades (each independent)
 var array<bool>  oIsBuy = array.new<bool>()
@@ -315,6 +327,7 @@ var array<float> oSL    = array.new_float()
 var array<float> oSLpts = array.new_float()
 var array<int>   oBar   = array.new_int()
 var array<int>   oTime  = array.new_int()
+var array<int>   oGen   = array.new_int()        // order generation (1,2,3..)
 
 // close active trade #idx
 f_closeTrade(int idx, float closePx, float rVal) =>
@@ -324,20 +337,23 @@ f_closeTrade(int idx, float closePx, float rVal) =>
     float tSLpts = array.get(oSLpts, idx)
     int   tBar   = array.get(oBar,   idx)
     int   tTime  = array.get(oTime,  idx)
+    int   tGen   = array.get(oGen,   idx)
     array.push(resIsWin,   isWin)
     array.push(resTradeRR, rVal)
     array.push(resTime,    tTime)
     array.push(resTpPts,   math.abs(rVal) * tSLpts)
+    array.push(resGen,     tGen)
     if array.size(resIsWin) > 5000
         array.shift(resIsWin)
         array.shift(resTradeRR)
         array.shift(resTime)
         array.shift(resTpPts)
+        array.shift(resGen)
     color exitCol = isWin ? color.new(color.green, 20) : color.new(color.red, 20)
     color pathCol = isWin ? color.new(color.green, 60) : color.new(color.red, 60)
     string rStr   = (rVal >= 0 ? "+" : "") + str.tostring(rVal, "#.##") + "R"
     regLabel(label.new(x=bar_index, y=closePx,
-                       text=(isWin ? "Win" : "Loss") + "\n" + rStr,
+                       text="Order-" + str.tostring(tGen) + " " + (isWin ? "Win" : "Loss") + "\n" + rStr,
                        color=exitCol, textcolor=color.white,
                        style=tIsBuy ? label.style_label_down : label.style_label_up,
                        size=size.small))
@@ -353,6 +369,22 @@ f_closeTrade(int idx, float closePx, float rVal) =>
     array.remove(oSLpts, idx)
     array.remove(oBar,   idx)
     array.remove(oTime,  idx)
+    array.remove(oGen,   idx)
+    // ---- Re-Entry: โดน SL (loss) + ราค้าจะกลับมาที่ entry เดิม -> ตั้ง pending Order ถัดไป ----
+    if reentryOn and not isWin and tGen <= reentryMax
+        int expMs = reentryExpMin > 0 ? (time + timeframe.in_seconds() * 1000) + reentryExpMin * 60000 : 0
+        array.push(pIsBuy, tIsBuy)
+        array.push(pLevel, tEntry)
+        array.push(pSLd,   tSLpts)
+        array.push(pTPd,   tSLpts * rr)
+        array.push(pExpire, expMs)
+        array.push(pBar,   bar_index)
+        array.push(pTime,  time)
+        array.push(pGen,   tGen + 1)
+        regLabel(label.new(x=bar_index, y=tEntry,
+                           text="Re-Entry → Order-" + str.tostring(tGen + 1),
+                           style=label.style_label_left, color=color.new(color.orange, 55),
+                           textcolor=color.white, size=size.tiny))
 
 // ---- Main engine: run once per confirmed bar ----
 if barstate.isconfirmed
@@ -407,6 +439,7 @@ if barstate.isconfirmed
             if triggered and capOk
                 float slD   = array.get(pSLd, i)
                 float tpD   = array.get(pTPd, i)
+                int   gen   = array.get(pGen, i)
                 float entry = isBuyP ? lvl + spread : lvl - spread
                 float tp    = isBuyP ? entry + tpD : entry - tpD
                 float sl    = isBuyP ? entry - slD : entry + slD
@@ -419,7 +452,7 @@ if barstate.isconfirmed
                 regLine(line.new(x1=bar_index, y1=entry, x2=bar_index, y2=sl,
                                  color=color.new(color.red, 70), width=1, style=line.style_arrow_right))
                 float lotSz = slD > 0 ? riskAmt / (slD * lotRatio) : na
-                string info = (isBuyP ? "BUY" : "SELL") + " triggered" +
+                string info = "Order-" + str.tostring(gen) + " " + (isBuyP ? "BUY" : "SELL") +
                               (na(lotSz) ? "" : "\nSize " + str.tostring(lotSz, "#.###") + " lot") +
                               "\nSL " + str.tostring(slD, format.mintick) + " · TP " + str.tostring(tpD, format.mintick)
                 regLabel(label.new(x=bar_index, y=entry, text=info,
@@ -432,6 +465,7 @@ if barstate.isconfirmed
                 array.push(oSLpts, slD)
                 array.push(oBar,   bar_index)
                 array.push(oTime,  time)
+                array.push(oGen,   gen)
                 triggeredNow := true
                 // เอาเฉพาะฝั่งที่ถูกทริกออกจากคิว (การยกเลิกอีกฝั่งทำใน OCO ด้านล่าง)
                 array.remove(pIsBuy, i)
@@ -441,6 +475,7 @@ if barstate.isconfirmed
                 array.remove(pExpire,i)
                 array.remove(pBar,   i)
                 array.remove(pTime,  i)
+                array.remove(pGen,   i)
             else
                 int exp = array.get(pExpire, i)
                 if exp > 0 and time >= exp
@@ -454,6 +489,7 @@ if barstate.isconfirmed
                     array.remove(pExpire,i)
                     array.remove(pBar,   i)
                     array.remove(pTime,  i)
+                    array.remove(pGen,   i)
 
     // 6.2b ----- OCO: ฝั่งหนึ่งถูกทริก -> ยกเลิก pending อีกฝั่งทั้งหมด -----
     if ocoCancel and triggeredNow and array.size(pLevel) > 0
@@ -468,6 +504,7 @@ if barstate.isconfirmed
         array.clear(pExpire)
         array.clear(pBar)
         array.clear(pTime)
+        array.clear(pGen)
 
     // 6.3 ----- วาง pending straddle ใหม่ ตาม Entry Mode -----
     // ตัดสินสัญญาณ + ฝั่งที่อนุญาต
@@ -512,6 +549,7 @@ if barstate.isconfirmed
             array.push(pExpire, expMs)
             array.push(pBar,   bar_index)
             array.push(pTime,  time)
+            array.push(pGen,   1)
         if allowSell
             array.push(pIsBuy, false)
             array.push(pLevel, sellLvl)
@@ -520,6 +558,7 @@ if barstate.isconfirmed
             array.push(pExpire, expMs)
             array.push(pBar,   bar_index)
             array.push(pTime,  time)
+            array.push(pGen,   1)
 
         if showPendingDraw
             if allowBuy
@@ -648,11 +687,15 @@ var table monthlyTbl    = table.new(f_tablePos(monthlyTablePos),  5, statMonths 
 var table settingsTbl   = table.new(f_tablePos(settingsTablePos), 2, 30,
      bgcolor=lxRowA, frame_width=2, frame_color=lxFrame, border_width=1, border_color=lxGrid)
 
+var table orderStatsTbl = table.new(f_tablePos(orderTablePos),   4, reentryMax + 4,
+     bgcolor=lxRowA, frame_width=2, frame_color=lxFrame, border_width=1, border_color=lxGrid)
+
 var bool mg1 = false
 var bool mg2 = false
 var bool mg3 = false
 var bool mg4 = false
 var bool mg5 = false
+var bool mg6 = false
 
 // ==========================================
 // --- 10. PERIOD STRING ---
@@ -1047,6 +1090,82 @@ if showMonthlyTable and barstate.islast and statMode == "2. Last N Months"
         table.merge_cells(monthlyTbl, 0, 0, 4, 0)
 
 // ==========================================
+// --- 14b. TABLE 6: BY ORDER (Order-1 / Order-2 / ..) ---
+// ==========================================
+
+if showOrderTable and barstate.islast
+    int maxG = reentryMax + 1
+    int[]   gW = array.new_int(maxG + 1, 0)
+    int[]   gL = array.new_int(maxG + 1, 0)
+    float[] gR = array.new_float(maxG + 1, 0.0)
+
+    int cutoffGI = 0
+    if statMode == "1. Last N Days"
+        int refo = timenow - statDays * 86400000
+        cutoffGI := year(refo,tzStr)*10000 + month(refo,tzStr)*100 + dayofmonth(refo,tzStr)
+
+    if array.size(resIsWin) > 0
+        for i = 0 to array.size(resIsWin) - 1
+            int t = array.get(resTime, i)
+            int tDay = year(t,tzStr)*10000 + month(t,tzStr)*100 + dayofmonth(t,tzStr)
+            bool valid = false
+            if statMode == "1. Last N Days"
+                valid := tDay >= cutoffGI
+            else if statMode == "2. Last N Months"
+                valid := (year(t,tzStr)*12 + month(t,tzStr)) >= (currentTotalM - statMonths + 1)
+            else
+                valid := month(t,tzStr) == targetMonthNum and year(t,tzStr) == actualTargetY
+            if valid
+                int g = array.get(resGen, i)
+                if g >= 1 and g <= maxG
+                    if array.get(resIsWin, i)
+                        array.set(gW, g, array.get(gW, g) + 1)
+                    else
+                        array.set(gL, g, array.get(gL, g) + 1)
+                    array.set(gR, g, array.get(gR, g) + array.get(resTradeRR, i))
+
+    table.cell(orderStatsTbl, 0, 0, "◆  BY ORDER  ·  " + periodStr, text_color=lxTitleTx, text_size=size.small, bgcolor=lxHeadBg)
+    table.cell(orderStatsTbl, 0, 1, "ORDER", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg, text_halign=text.align_left)
+    table.cell(orderStatsTbl, 1, 1, "W-L",   text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+    table.cell(orderStatsTbl, 2, 1, "WR%",   text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+    table.cell(orderStatsTbl, 3, 1, "NET R", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+
+    int   sW = 0
+    int   sL = 0
+    float sR = 0.0
+    for g = 1 to maxG
+        int   gw   = array.get(gW, g)
+        int   gl   = array.get(gL, g)
+        float gnr  = array.get(gR, g)
+        int   gtot = gw + gl
+        float gwr  = gtot > 0 ? (gw / gtot) * 100.0 : na
+        color gwrC = na(gwr) ? lxDimTx : gwr >= 50 ? lxGreen : lxAmber
+        color gnrC = gtot == 0 ? lxDimTx : gnr > 0 ? lxGreen : gnr < 0 ? lxRed : lxAmber
+        color rowBg = g % 2 == 1 ? lxRowA : lxRowB
+        table.cell(orderStatsTbl, 0, g+1, "Order-" + str.tostring(g),
+                   text_color=gtot == 0 ? lxDimTx : lxText, text_size=size.small, bgcolor=rowBg, text_halign=text.align_left)
+        table.cell(orderStatsTbl, 1, g+1, gtot == 0 ? "-" : str.tostring(gw) + "W · " + str.tostring(gl) + "L",
+                   text_color=gtot == 0 ? lxDimTx : lxText, text_size=size.small, bgcolor=rowBg)
+        table.cell(orderStatsTbl, 2, g+1, na(gwr) ? "-" : str.tostring(gwr, "#.#") + "%",
+                   text_color=gwrC, text_size=size.small, bgcolor=rowBg)
+        table.cell(orderStatsTbl, 3, g+1, gtot == 0 ? "-" : (gnr >= 0 ? "+" : "") + str.tostring(gnr, "#.##") + "R",
+                   text_color=gnrC, text_size=size.small, bgcolor=rowBg, text_halign=text.align_right)
+        sW += gw
+        sL += gl
+        sR += gnr
+    int   gTot = sW + sL
+    float gWR  = gTot > 0 ? (sW / gTot) * 100.0 : na
+    int   trow = maxG + 2
+    table.cell(orderStatsTbl, 0, trow, "TOTAL", text_color=lxTitleTx, text_size=size.tiny, bgcolor=lxHeadBg, text_halign=text.align_left)
+    table.cell(orderStatsTbl, 1, trow, gTot == 0 ? "-" : str.tostring(sW) + "W · " + str.tostring(sL) + "L", text_color=lxText, text_size=size.tiny, bgcolor=lxHeadBg)
+    table.cell(orderStatsTbl, 2, trow, na(gWR) ? "-" : str.tostring(gWR, "#.#") + "%", text_color=na(gWR) ? lxDimTx : gWR >= 50 ? lxGreen : lxAmber, text_size=size.tiny, bgcolor=lxHeadBg)
+    table.cell(orderStatsTbl, 3, trow, gTot == 0 ? "-" : (sR >= 0 ? "+" : "") + str.tostring(sR, "#.##") + "R",
+               text_color=gTot == 0 ? lxDimTx : sR > 0 ? lxGreen : sR < 0 ? lxRed : lxAmber, text_size=size.tiny, bgcolor=lxHeadBg, text_halign=text.align_right)
+    if not mg6
+        mg6 := true
+        table.merge_cells(orderStatsTbl, 0, 0, 3, 0)
+
+// ==========================================
 // --- 15. TABLE 5: SETTINGS SUMMARY ---
 // ==========================================
 
@@ -1154,6 +1273,11 @@ if showSettingsTable and barstate.islast
     table.cell(settingsTbl, 0, ri, "1-Trade · OCO", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
     table.cell(settingsTbl, 1, ri, (oneTradeOnly ? "ON" : "off") + " · " + (ocoCancel ? "ON" : "off"),
                text_color=(oneTradeOnly or ocoCancel) ? lxCyan : lxDimTx, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
+    ri += 1
+    rowBg := ri % 2 == 1 ? lxRowA : lxRowB
+    table.cell(settingsTbl, 0, ri, "Re-Entry", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
+    table.cell(settingsTbl, 1, ri, reentryOn ? ("ON · max " + str.tostring(reentryMax)) : "off",
+               text_color=reentryOn ? lxCyan : lxDimTx, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
     ri += 1
 
     // Stat period

@@ -78,6 +78,11 @@ input bool     InpOCO             = false;   // OCO: ฝั่งหนึ่ง
 input long     InpMagicNumber     = 20250911;// Magic Number
 input string   InpComment         = "ATR_News";
 
+input group "=== Re-Entry (เมื่อโดน SL แล้วราคากลับมาจุดเปิดเดิม) ==="
+input bool     InpReentryOn         = false; // เปิดใช้ Re-Entry
+input int      InpReentryMax        = 1;     // จำนวน re-entry สูงสุด (1 = ถึง Order-2)
+input int      InpReentryExpireMin  = 0;     // นาทีหมดอายุของ pending re-entry (0 = ไม่หมดอายุ)
+
 //====================== GLOBALS =====================================
 CTrade   trade;
 int      atrHandle = INVALID_HANDLE;
@@ -430,7 +435,7 @@ void PlaceStraddle(bool allowBuy, bool allowSell, string trigTxt)
       expiration = TimeCurrent() + (datetime)InpExpireMinutes * 60;
      }
 
-   string cmt = StringLen(trigTxt) > 0 ? InpComment + " " + trigTxt : InpComment;
+   string cmt = (StringLen(trigTxt) > 0 ? InpComment + " " + trigTxt : InpComment) + " Order-1";
 
    // วาง Buy Stop (เฉพาะฝั่งที่อนุญาต)
    if(allowBuy)
@@ -449,5 +454,98 @@ void PlaceStraddle(bool allowBuy, bool allowSell, string trigTxt)
       else
          PrintFormat("[%s] Sell Stop @%.*f SL=%.*f TP=%.*f lot=%.2f", trigTxt, digits, sellPrice, digits, sellSL, digits, sellTP, lot);
      }
+  }
+
+//+------------------------------------------------------------------+
+//| อ่านเลข generation จากคอมเมนต์ (เช่น "... Order-2" -> 2)           |
+//+------------------------------------------------------------------+
+int ParseGen(string comment)
+  {
+   int p = StringFind(comment, "Order-");
+   if(p < 0)
+      return 1;
+   string tail = StringSubstr(comment, p + 6);
+   int g = (int)StringToInteger(tail);
+   return g < 1 ? 1 : g;
+  }
+
+//+------------------------------------------------------------------+
+//| Re-Entry: เมื่อ position โดน SL -> ตั้ง pending Order ถัดไป        |
+//| ที่ "จุดเปิดเดิม" ทิศทางเดิม (รอราค้ากลับมาที่ entry)              |
+//+------------------------------------------------------------------+
+void OnTradeTransaction(const MqlTradeTransaction &trans,
+                        const MqlTradeRequest &request,
+                        const MqlTradeResult &result)
+  {
+   if(!InpReentryOn)
+      return;
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD)
+      return;
+
+   ulong dealTk = trans.deal;
+   if(dealTk == 0 || !HistoryDealSelect(dealTk))
+      return;
+   if(HistoryDealGetInteger(dealTk, DEAL_MAGIC)  != InpMagicNumber) return;
+   if(HistoryDealGetString(dealTk, DEAL_SYMBOL)  != _Symbol)        return;
+   if(HistoryDealGetInteger(dealTk, DEAL_ENTRY)  != DEAL_ENTRY_OUT) return; // เฉพาะตอนปิด
+   if(HistoryDealGetInteger(dealTk, DEAL_REASON) != DEAL_REASON_SL) return; // เฉพาะโดน SL
+   if(HistoryDealGetDouble(dealTk, DEAL_PROFIT)  >= 0.0)            return;
+
+   long   posId    = HistoryDealGetInteger(dealTk, DEAL_POSITION_ID);
+   double slPrice  = HistoryDealGetDouble(dealTk, DEAL_PRICE);      // ราคาปิด ~ SL
+   long   dealType = HistoryDealGetInteger(dealTk, DEAL_TYPE);
+   bool   wasBuy   = (dealType == DEAL_TYPE_SELL);                  // ปิด BUY ด้วย SELL
+
+   // หา entry price + generation จาก deal เปิด (IN) ของ position นี้
+   double entry = 0.0;
+   int    gen   = 1;
+   if(HistorySelectByPosition(posId))
+     {
+      int total = HistoryDealsTotal();
+      for(int i = 0; i < total; i++)
+        {
+         ulong dk = HistoryDealGetTicket(i);
+         if(dk == 0) continue;
+         if(HistoryDealGetInteger(dk, DEAL_ENTRY) == DEAL_ENTRY_IN)
+           {
+            entry = HistoryDealGetDouble(dk, DEAL_PRICE);
+            gen   = ParseGen(HistoryDealGetString(dk, DEAL_COMMENT));
+            break;
+           }
+        }
+     }
+   if(entry <= 0.0)     return;
+   if(gen > InpReentryMax) return; // เกินจำนวน re-entry ที่กำหนด
+
+   double slDist = MathAbs(entry - slPrice);
+   if(slDist <= 0.0)    return;
+   double tpDist = slDist * InpRR;
+
+   int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   double lvl    = NormalizeDouble(entry, digits);
+   double sl     = wasBuy ? NormalizeDouble(lvl - slDist, digits) : NormalizeDouble(lvl + slDist, digits);
+   double tp     = wasBuy ? NormalizeDouble(lvl + tpDist, digits) : NormalizeDouble(lvl - tpDist, digits);
+
+   double lot = CalcLot(slDist);
+   if(lot <= 0.0)       return;
+
+   ENUM_ORDER_TYPE_TIME typeTime = ORDER_TIME_GTC;
+   datetime expiration = 0;
+   if(InpReentryExpireMin > 0)
+     {
+      typeTime   = ORDER_TIME_SPECIFIED;
+      expiration = TimeCurrent() + (datetime)InpReentryExpireMin * 60;
+     }
+
+   int    newGen = gen + 1;
+   string cmt    = InpComment + " Order-" + IntegerToString(newGen);
+
+   bool ok = wasBuy ? trade.BuyStop(lot, lvl, _Symbol, sl, tp, typeTime, expiration, cmt)
+                    : trade.SellStop(lot, lvl, _Symbol, sl, tp, typeTime, expiration, cmt);
+   if(ok)
+      PrintFormat("Re-Entry -> Order-%d %s @%.*f SL=%.*f TP=%.*f lot=%.2f",
+                  newGen, wasBuy ? "BUY" : "SELL", digits, lvl, digits, sl, digits, tp, lot);
+   else
+      PrintFormat("Re-Entry Order-%d วางไม่สำเร็จ err=%d", newGen, trade.ResultRetcode());
   }
 //+------------------------------------------------------------------+
