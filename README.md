@@ -9,6 +9,19 @@
 
 ---
 
+## Distance Mode (วิธีคิดระยะ Entry/SL/TP) — มีทั้ง EA และ Pine
+
+| Mode | ระยะ Entry / SL / TP |
+|---|---|
+| **ATR × Multiplier** (เดิม) | Entry = ATR×mult, SL = ATR×mult, TP = SL×RR |
+| **Fixed Distance** | ระบุเป็น **หน่วยราคาคงที่** — `1 = ราคาเปลี่ยน 1.0` (เช่น XAUUSD 4000→3999 = ระยะ 1) |
+
+- Fixed Distance: กรอก `Entry Distance`, `SL Distance`, `TP Distance` ตรงๆ (เช่น SL=1, TP=2 → RR 1:2)
+- สถิติ (Net R / By-Order) คำนวณ R จากระยะ TP/SL จริง จึงถูกต้องทุกโหมด
+- Re-Entry ใช้ระยะเดียวกับออเดอร์เดิมเสมอ
+
+---
+
 ## Entry Mode (ทริกเกอร์การเข้า) — มีทั้งใน EA และ Pine
 
 เลือกได้ว่าจะให้ "วางออเดอร์ ATR straddle" ตอนไหน:

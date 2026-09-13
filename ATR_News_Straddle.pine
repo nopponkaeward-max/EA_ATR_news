@@ -49,13 +49,27 @@ trThu = input.bool(true,  title="Thu", group="News Time — Trade Days", inline=
 trFri = input.bool(true,  title="Fri", group="News Time — Trade Days", inline="td1")
 trSat = input.bool(false, title="Sat", group="News Time — Trade Days", inline="td1")
 
-// --- ATR Distance / SL / TP ---
+// --- Distance Mode (วิธีคิดระยะ Entry/SL/TP) ---
+distMode  = input.string("ATR × Multiplier", title="Distance Mode",
+            options=["ATR × Multiplier", "Fixed Distance"], group="ATR / Distance",
+            tooltip="ATR × Multiplier = คิดระยะจาก ATR\nFixed Distance = ระบุระยะคงที่เป็นหน่วยราคา (1 = ราคาเปลี่ยน 1.0 เช่น XAUUSD 4000->3999)")
+
+// --- ATR Distance / SL / TP (ใช้เมื่อ Distance Mode = ATR) ---
 atrTF     = input.timeframe("15", title="ATR Timeframe", group="ATR / Distance",
             tooltip="Timeframe ที่ใช้คำนวณ ATR (ค่าเริ่ม 15 = M15)")
 atrPeriod = input.int(14,   title="ATR Period",          minval=1,   group="ATR / Distance")
 entryMult = input.float(1.0, title="Entry × ATR (ระยะวางออเดอร์)", minval=0.01, step=0.1, group="ATR / Distance")
 slMult    = input.float(1.0, title="SL × ATR (ระยะ SL)",           minval=0.01, step=0.1, group="ATR / Distance")
 rr        = input.float(2.0, title="R:R (TP = ระยะSL × RR)",        minval=0.1,  step=0.1, group="ATR / Distance")
+
+// --- Fixed Distance (ใช้เมื่อ Distance Mode = Fixed) หน่วย = ราคา (1 = 1.0) ---
+entryDistFix = input.float(1.0, title="Entry Distance (fixed)", minval=0.0, step=0.1, group="Fixed Distance",
+               tooltip="ระยะจากราคาปิดไปจุดวางออเดอร์ (หน่วยราคา) — 0 = วางที่ราคาปิดพอดี")
+slDistFix    = input.float(1.0, title="SL Distance (fixed)",    minval=0.01, step=0.1, group="Fixed Distance")
+tpDistFix    = input.float(2.0, title="TP Distance (fixed)",    minval=0.01, step=0.1, group="Fixed Distance")
+
+bool   isFixedDist = distMode == "Fixed Distance"
+float  rrEff       = isFixedDist ? (slDistFix > 0 ? tpDistFix / slDistFix : na) : rr
 spread    = input.float(0.0, title="Spread/Slippage (price)",       minval=0,    step=0.01, group="ATR / Distance",
             tooltip="Buy fill = level + spread | Sell fill = level − spread")
 ltfRes    = input.timeframe("1", title="Lower TF for TP/SL check", group="ATR / Distance",
@@ -325,6 +339,7 @@ var array<float> oEntry = array.new_float()
 var array<float> oTP    = array.new_float()
 var array<float> oSL    = array.new_float()
 var array<float> oSLpts = array.new_float()
+var array<float> oTPpts = array.new_float()      // TP distance (price)
 var array<int>   oBar   = array.new_int()
 var array<int>   oTime  = array.new_int()
 var array<int>   oGen   = array.new_int()        // order generation (1,2,3..)
@@ -335,6 +350,7 @@ f_closeTrade(int idx, float closePx, float rVal) =>
     bool  tIsBuy = array.get(oIsBuy, idx)
     float tEntry = array.get(oEntry, idx)
     float tSLpts = array.get(oSLpts, idx)
+    float tTPpts = array.get(oTPpts, idx)
     int   tBar   = array.get(oBar,   idx)
     int   tTime  = array.get(oTime,  idx)
     int   tGen   = array.get(oGen,   idx)
@@ -367,16 +383,17 @@ f_closeTrade(int idx, float closePx, float rVal) =>
     array.remove(oTP,    idx)
     array.remove(oSL,    idx)
     array.remove(oSLpts, idx)
+    array.remove(oTPpts, idx)
     array.remove(oBar,   idx)
     array.remove(oTime,  idx)
     array.remove(oGen,   idx)
-    // ---- Re-Entry: โดน SL (loss) + ราค้าจะกลับมาที่ entry เดิม -> ตั้ง pending Order ถัดไป ----
+    // ---- Re-Entry: โดน SL (loss) + ราคากลับมาที่ entry เดิม -> ตั้ง pending Order ถัดไป ----
     if reentryOn and not isWin and tGen <= reentryMax
         int expMs = reentryExpMin > 0 ? (time + timeframe.in_seconds() * 1000) + reentryExpMin * 60000 : 0
         array.push(pIsBuy, tIsBuy)
         array.push(pLevel, tEntry)
         array.push(pSLd,   tSLpts)
-        array.push(pTPd,   tSLpts * rr)
+        array.push(pTPd,   tTPpts)
         array.push(pExpire, expMs)
         array.push(pBar,   bar_index)
         array.push(pTime,  time)
@@ -420,7 +437,8 @@ if barstate.isconfirmed
                                     else if ltfTP and ltfSL
                                         tpFirst := math.abs(open - tTP) < math.abs(open - tSL)
                                         resolved := true
-                    float rVal    = tpFirst ? rr : -1.0
+                    float tTPp    = array.get(oTPpts, i)
+                    float rVal    = tpFirst ? (tSLp > 0 ? tTPp / tSLp : 0.0) : -1.0
                     float closePx = tpFirst ? tTP : tSL
                     f_closeTrade(i, closePx, rVal)
 
@@ -463,6 +481,7 @@ if barstate.isconfirmed
                 array.push(oTP,    tp)
                 array.push(oSL,    sl)
                 array.push(oSLpts, slD)
+                array.push(oTPpts, tpD)
                 array.push(oBar,   bar_index)
                 array.push(oTime,  time)
                 array.push(oGen,   gen)
@@ -532,11 +551,12 @@ if barstate.isconfirmed
             allowSell := allowSell or rsiSigOS
         trigTxt := (str.length(trigTxt) > 0 ? trigTxt + " + " : "") + "RSI " + str.tostring(rsiVal, "#.#")
 
-    if (newsTrig or rsiTrig) and (allowBuy or allowSell) and not blockNew and not na(atrVal) and atrVal > 0
+    bool distReady = isFixedDist or (not na(atrVal) and atrVal > 0)
+    if (newsTrig or rsiTrig) and (allowBuy or allowSell) and not blockNew and distReady
         float anchor   = close
-        float entryDist = atrVal * entryMult
-        float slDist    = atrVal * slMult
-        float tpDist    = slDist * rr
+        float entryDist = isFixedDist ? entryDistFix : atrVal * entryMult
+        float slDist    = isFixedDist ? slDistFix    : atrVal * slMult
+        float tpDist    = isFixedDist ? tpDistFix    : slDist * rr
         float buyLvl   = anchor + entryDist
         float sellLvl  = anchor - entryDist
         int   expMs    = expireMin > 0 ? closeMs + expireMin * 60000 : 0
@@ -574,7 +594,7 @@ if barstate.isconfirmed
                                    style=label.style_label_left, color=color.new(color.red, 80),
                                    textcolor=color.red, size=size.tiny))
             regLabel(label.new(x=bar_index, y=anchor,
-                               text=trigTxt + "\nATR " + str.tostring(atrVal, format.mintick),
+                               text=trigTxt + (isFixedDist ? "\nFixed SL " + str.tostring(slDist, format.mintick) : "\nATR " + str.tostring(atrVal, format.mintick)),
                                style=label.style_label_center, color=color.new(color.gray, 30),
                                textcolor=color.white, size=size.tiny))
 
@@ -801,7 +821,7 @@ if showStatsTable and barstate.islast
     color strkCol  = streak > 0 ? lxGreen : streak < 0 ? lxRed : lxMuted
     string mxWDate = maxW > 0 ? str.tostring(dayofmonth(maxWS,tzStr)) + " " + f_monthShort(month(maxWS,tzStr)) + "–" + str.tostring(dayofmonth(maxWE,tzStr)) + " " + f_monthShort(month(maxWE,tzStr)) : "-"
     string mxLDate = maxL > 0 ? str.tostring(dayofmonth(maxLS,tzStr)) + " " + f_monthShort(month(maxLS,tzStr)) + "–" + str.tostring(dayofmonth(maxLE,tzStr)) + " " + f_monthShort(month(maxLE,tzStr)) : "-"
-    string atrSub  = "ATR×" + str.tostring(entryMult, "#.#") + " · RR 1:" + str.tostring(rr, "#.##")
+    string atrSub  = (isFixedDist ? "Fixed SL " + str.tostring(slDistFix, "#.##") : "ATR×" + str.tostring(entryMult, "#.#")) + " · RR 1:" + str.tostring(rrEff, "#.##")
 
     table.cell(statsTable, 0, 0,  "◆  ATR NEWS STRADDLE",    text_color=lxTitleTx, text_size=size.small,  bgcolor=lxHeadBg)
     table.cell(statsTable, 0, 1,  periodStr + "  ·  " + atrSub, text_color=lxMuted,  text_size=size.tiny,   bgcolor=lxSubBg)
@@ -828,14 +848,14 @@ if showStatsTable and barstate.islast
                text_color=lxAmber,  text_size=size.small, bgcolor=lxRowA, text_halign=text.align_right)
     table.cell(statsTable, 0, 10, "Streak",     text_color=lxMuted,  text_size=size.tiny,   bgcolor=lxRowB, text_halign=text.align_left)
     table.cell(statsTable, 1, 10, strkStr,       text_color=strkCol,  text_size=size.small,  bgcolor=lxRowB, text_halign=text.align_right)
-    table.cell(statsTable, 0, 11, "Entry × ATR", text_color=lxMuted,  text_size=size.tiny,   bgcolor=lxRowA, text_halign=text.align_left)
-    table.cell(statsTable, 1, 11, str.tostring(entryMult, "#.##") + "×",
+    table.cell(statsTable, 0, 11, isFixedDist ? "Entry dist" : "Entry × ATR", text_color=lxMuted,  text_size=size.tiny,   bgcolor=lxRowA, text_halign=text.align_left)
+    table.cell(statsTable, 1, 11, isFixedDist ? str.tostring(entryDistFix, "#.##") : str.tostring(entryMult, "#.##") + "×",
                text_color=lxText,   text_size=size.small, bgcolor=lxRowA, text_halign=text.align_right)
-    table.cell(statsTable, 0, 12, "SL × ATR",    text_color=lxMuted,  text_size=size.tiny,   bgcolor=lxRowB, text_halign=text.align_left)
-    table.cell(statsTable, 1, 12, str.tostring(slMult, "#.##") + "×",
+    table.cell(statsTable, 0, 12, isFixedDist ? "SL dist" : "SL × ATR",    text_color=lxMuted,  text_size=size.tiny,   bgcolor=lxRowB, text_halign=text.align_left)
+    table.cell(statsTable, 1, 12, isFixedDist ? str.tostring(slDistFix, "#.##") : str.tostring(slMult, "#.##") + "×",
                text_color=lxRed,    text_size=size.small, bgcolor=lxRowB, text_halign=text.align_right)
     table.cell(statsTable, 0, 13, "R:R",         text_color=lxMuted,  text_size=size.tiny,   bgcolor=lxRowA, text_halign=text.align_left)
-    table.cell(statsTable, 1, 13, "1:" + str.tostring(rr, "#.##"),
+    table.cell(statsTable, 1, 13, na(rrEff) ? "-" : "1:" + str.tostring(rrEff, "#.##"),
                text_color=lxText,   text_size=size.small, bgcolor=lxRowA, text_halign=text.align_right)
     table.cell(statsTable, 0, 14, "News · Risk", text_color=lxMuted,  text_size=size.tiny,   bgcolor=lxRowB, text_halign=text.align_left)
     table.cell(statsTable, 1, 14, f_hhmm(newsHour, newsMinute) + "  ·  $" + str.tostring(riskAmt, "#"),
@@ -1182,7 +1202,6 @@ if showSettingsTable and barstate.islast
     if str.length(daysStr) == 0
         daysStr := "none"
 
-    float rrSet  = rr
     color rowBg = lxRowA
 
     table.cell(settingsTbl, 0, ri, "◆  SETTINGS SUMMARY", text_color=lxTitleTx, text_size=size.small, bgcolor=lxHeadBg)
@@ -1227,25 +1246,32 @@ if showSettingsTable and barstate.islast
     table.cell(settingsTbl, 1, ri, tzStr, text_color=lxCyan, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
     ri += 1
 
-    // ATR section
-    table.cell(settingsTbl, 0, ri, "─── ATR / Distance ───", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg, text_halign=text.align_left)
+    // Distance section
+    table.cell(settingsTbl, 0, ri, "─── Distance / SL / TP ───", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg, text_halign=text.align_left)
     table.cell(settingsTbl, 1, ri, "",                        text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
     ri += 1
     rowBg := ri % 2 == 1 ? lxRowA : lxRowB
-    table.cell(settingsTbl, 0, ri, "ATR TF · Period", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
-    table.cell(settingsTbl, 1, ri, atrTF + " · " + str.tostring(atrPeriod), text_color=lxText, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
+    table.cell(settingsTbl, 0, ri, "Mode", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
+    table.cell(settingsTbl, 1, ri, isFixedDist ? "Fixed" : "ATR", text_color=lxCyan, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
     ri += 1
-    rowBg := ri % 2 == 1 ? lxRowA : lxRowB
-    table.cell(settingsTbl, 0, ri, "Entry × ATR", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
-    table.cell(settingsTbl, 1, ri, str.tostring(entryMult, "#.##") + "×", text_color=lxGreen, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
-    ri += 1
-    rowBg := ri % 2 == 1 ? lxRowA : lxRowB
-    table.cell(settingsTbl, 0, ri, "SL × ATR", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
-    table.cell(settingsTbl, 1, ri, str.tostring(slMult, "#.##") + "×", text_color=lxRed, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
-    ri += 1
+    if isFixedDist
+        rowBg := ri % 2 == 1 ? lxRowA : lxRowB
+        table.cell(settingsTbl, 0, ri, "Entry · SL · TP", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
+        table.cell(settingsTbl, 1, ri, str.tostring(entryDistFix, "#.##") + " · " + str.tostring(slDistFix, "#.##") + " · " + str.tostring(tpDistFix, "#.##"),
+                   text_color=lxText, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
+        ri += 1
+    else
+        rowBg := ri % 2 == 1 ? lxRowA : lxRowB
+        table.cell(settingsTbl, 0, ri, "ATR TF · Period", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
+        table.cell(settingsTbl, 1, ri, atrTF + " · " + str.tostring(atrPeriod), text_color=lxText, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
+        ri += 1
+        rowBg := ri % 2 == 1 ? lxRowA : lxRowB
+        table.cell(settingsTbl, 0, ri, "Entry · SL × ATR", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
+        table.cell(settingsTbl, 1, ri, str.tostring(entryMult, "#.##") + "× · " + str.tostring(slMult, "#.##") + "×", text_color=lxText, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
+        ri += 1
     rowBg := ri % 2 == 1 ? lxRowA : lxRowB
     table.cell(settingsTbl, 0, ri, "R:R", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
-    table.cell(settingsTbl, 1, ri, "1:" + str.tostring(rrSet, "#.##"), text_color=lxText, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
+    table.cell(settingsTbl, 1, ri, na(rrEff) ? "-" : "1:" + str.tostring(rrEff, "#.##"), text_color=lxText, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
     ri += 1
     if spread > 0
         rowBg := ri % 2 == 1 ? lxRowA : lxRowB
