@@ -58,6 +58,27 @@
 > - เปิด One Trade = คุมให้มีชุดเทรดเดียว ณ เวลาหนึ่ง ไม่ซ้อนหลายชุด
 > - EA: นับจาก order/position จริง (ตาม Magic) — Pine: นับจากสถานะจำลอง
 
+### Trailing SL ตาม ATR (มีทั้ง EA และ Pine)
+| Input | ผล |
+|---|---|
+| **Trailing SL** (`InpTrailOn` / `trailOn`) | เปิด/ปิดการเลื่อน SL ตามราคา |
+| **Trail × ATR** (`InpTrailMult` / `trailMult`) | ระยะห่าง SL = ATR × ค่านี้ |
+| **Trail Start × ATR** (`InpTrailStartMult` / `trailStartMult`) | เริ่มเทรลเมื่อกำไรเกิน N×ATR (0 = ทันที) |
+
+- Buy: `SL = High − ATR×mult` (ขยับขึ้นเท่านั้น) / Sell: `SL = Low + ATR×mult` (ขยับลงเท่านั้น)
+- สถิติคิดค่า R จากราคาปิดจริงเทียบ entry จึงถูกต้องแม้ SL ถูกเทรล (อาจได้ +R เมื่อ SL เลื่อนเหนือทุน)
+
+### RSI Entry แบบ Limit order (รอ pullback) — มีทั้ง EA และ Pine
+เฉพาะ entry ของ **RSI** (News ยังเป็น Stop breakout) — เพิ่ม `RSI Order Type`:
+| ค่า | ผล |
+|---|---|
+| **Stop (breakout)** (เดิม) | Buy Stop เหนือราคา / Sell Stop ใต้ราคา |
+| **Limit (pullback)** | วาง limit รอราคาย่อ/เด้งกลับมาก่อนค่อยเข้า |
+
+**RSI Limit Mapping** (เมื่อใช้ Limit):
+- **Same dir**: ฝั่ง Buy → **Buy Limit ใต้ราคา** (รอย่อลงมาซื้อ), ฝั่ง Sell → **Sell Limit เหนือราคา** (รอเด้งขึ้นไปขาย)
+- **Flip**: สลับทิศ (ฝั่ง Buy → Sell Limit เหนือราคา ฯลฯ)
+
 ### Re-Entry (มีทั้ง EA และ Pine)
 | Input | ผล |
 |---|---|

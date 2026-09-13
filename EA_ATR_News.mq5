@@ -36,6 +36,16 @@ enum ENUM_RSI_DIR
    RSI_A_OBSELL = 1, // A: OB->Sell / OS->Buy
    RSI_B_OBBUY  = 2  // B: OB->Buy / OS->Sell
   };
+enum ENUM_RSI_ORDER
+  {
+   RSI_ORD_STOP  = 0, // Stop (breakout)
+   RSI_ORD_LIMIT = 1  // Limit (pullback)
+  };
+enum ENUM_RSI_LIMIT_DIR
+  {
+   LIMIT_SAME = 0, // Same dir (Buy=BuyLimit dip)
+   LIMIT_FLIP = 1  // Flip (Buy=SellLimit)
+  };
 
 //====================== INPUTS ======================================
 input group "=== Entry Mode ==="
@@ -48,6 +58,8 @@ input double          InpRSIOB     = 70.0;          // Overbought
 input double          InpRSIOS     = 30.0;          // Oversold
 input ENUM_RSI_TRIG   InpRSITrig   = RSI_ON_CROSS;  // ทริกตอนตัดเข้าโซน หรือ ทุกแท่งในโซน
 input ENUM_RSI_DIR    InpRSIDir    = RSI_BOTH;      // ทิศทางเมื่อเจอ OB/OS
+input ENUM_RSI_ORDER  InpRSIOrderType = RSI_ORD_STOP; // ชนิดออเดอร์ของ RSI: Stop(เบรก) / Limit(รอ pullback)
+input ENUM_RSI_LIMIT_DIR InpRSILimitDir = LIMIT_SAME; // การแมพทิศเมื่อใช้ Limit
 
 input group "=== เวลาข่าว (เวลา Server ของโบรกเกอร์) ==="
 input int      InpNewsHour        = 19;      // ชั่วโมงข่าว (server time, 0-23)
@@ -86,6 +98,11 @@ input group "=== Re-Entry (เมื่อโดน SL แล้วราคา�
 input bool     InpReentryOn         = false; // เปิดใช้ Re-Entry
 input int      InpReentryMax        = 1;     // จำนวน re-entry สูงสุด (1 = ถึง Order-2)
 input int      InpReentryExpireMin  = 0;     // นาทีหมดอายุของ pending re-entry (0 = ไม่หมดอายุ)
+
+input group "=== Trailing SL (ตาม ATR) ==="
+input bool     InpTrailOn        = false;    // เปิดใช้ Trailing SL
+input double   InpTrailMult      = 1.5;      // ระยะ trailing = ATR × ค่านี้
+input double   InpTrailStartMult = 1.0;      // เริ่มเทรลเมื่อกำไรเกิน ATR × ค่านี้ (0 = ทันที)
 
 //====================== GLOBALS =====================================
 CTrade   trade;
@@ -215,6 +232,10 @@ void OnTick()
    if(InpOCO && CountPositions() > 0 && CountPendingOrders() > 0)
       DeleteAllPendings();
 
+   // --- Trailing SL (ทุก tick) ---
+   if(InpTrailOn)
+      ManageTrailing();
+
    // เวลาเปิดของแท่งปัจจุบัน (index 0) บน TF ที่กำหนด
    datetime curBarOpen = iTime(_Symbol, InpEntryTF, 0);
    if(curBarOpen == 0)
@@ -241,6 +262,8 @@ void OnTick()
 
    bool allowBuy  = false;
    bool allowSell = false;
+   bool newsFired = false;
+   bool rsiFired  = false;
    string trigTxt = "";
 
    // --- News trigger ---
@@ -248,6 +271,7 @@ void OnTick()
      {
       allowBuy  = true;
       allowSell = true;
+      newsFired = true;
       trigTxt   = "News";
      }
 
@@ -283,13 +307,18 @@ void OnTick()
                if(sigOB) allowBuy  = true;
                if(sigOS) allowSell = true;
               }
+            rsiFired = true;
             trigTxt = (StringLen(trigTxt) > 0 ? trigTxt + "+" : "") + "RSI " + DoubleToString(rCur, 1);
            }
         }
      }
 
+   // RSI Limit: ใช้ limit เฉพาะเมื่อ RSI ทริก และ News ไม่ได้ทริกในแท่งเดียวกัน
+   bool useLimit = rsiFired && !newsFired && (InpRSIOrderType == RSI_ORD_LIMIT);
+   bool flip     = (InpRSILimitDir == LIMIT_FLIP);
+
    if(allowBuy || allowSell)
-      PlaceStraddle(allowBuy, allowSell, trigTxt);
+      PlaceStraddle(allowBuy, allowSell, useLimit, flip, trigTxt);
   }
 
 //+------------------------------------------------------------------+
@@ -356,9 +385,45 @@ double CalcLot(double slDistancePrice)
   }
 
 //+------------------------------------------------------------------+
-//| วาง Buy Stop + Sell Stop คร่อมราคาปิดแท่งข่าว                      |
+//| วาง pending 1 ตัว (stop/limit) ปรับ stops level + SL/TP ให้อัตโนมัติ|
 //+------------------------------------------------------------------+
-void PlaceStraddle(bool allowBuy, bool allowSell, string trigTxt)
+void PlacePending(bool isBuy, bool isLimit, double lvl, double slDist, double tpDist,
+                  double lot, ENUM_ORDER_TYPE_TIME tt, datetime exp, string cmt)
+  {
+   int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   double point  = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   long   stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDist    = stopsLevel * point;
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   // ปรับระดับให้ห่างราคาตลาดตาม stops level ตามชนิดออเดอร์
+   if(!isLimit && isBuy   && (lvl - ask) < minDist) lvl = ask + minDist + point; // Buy Stop เหนือ Ask
+   if(!isLimit && !isBuy  && (bid - lvl) < minDist) lvl = bid - minDist - point; // Sell Stop ใต้ Bid
+   if(isLimit  && isBuy   && (ask - lvl) < minDist) lvl = ask - minDist - point; // Buy Limit ใต้ Ask
+   if(isLimit  && !isBuy  && (lvl - bid) < minDist) lvl = bid + minDist + point; // Sell Limit เหนือ Bid
+   lvl = NormalizeDouble(lvl, digits);
+
+   double sl = isBuy ? NormalizeDouble(lvl - slDist, digits) : NormalizeDouble(lvl + slDist, digits);
+   double tp = isBuy ? NormalizeDouble(lvl + tpDist, digits) : NormalizeDouble(lvl - tpDist, digits);
+
+   bool ok = false;
+   string kind = "";
+   if(isBuy && !isLimit) { ok = trade.BuyStop (lot, lvl, _Symbol, sl, tp, tt, exp, cmt); kind = "Buy Stop"; }
+   if(isBuy &&  isLimit) { ok = trade.BuyLimit(lot, lvl, _Symbol, sl, tp, tt, exp, cmt); kind = "Buy Limit"; }
+   if(!isBuy && !isLimit){ ok = trade.SellStop(lot, lvl, _Symbol, sl, tp, tt, exp, cmt); kind = "Sell Stop"; }
+   if(!isBuy &&  isLimit){ ok = trade.SellLimit(lot, lvl, _Symbol, sl, tp, tt, exp, cmt); kind = "Sell Limit"; }
+
+   if(ok)
+      PrintFormat("%s @%.*f SL=%.*f TP=%.*f lot=%.2f [%s]", kind, digits, lvl, digits, sl, digits, tp, lot, cmt);
+   else
+      PrintFormat("วาง %s ไม่สำเร็จ err=%d", kind, trade.ResultRetcode());
+  }
+
+//+------------------------------------------------------------------+
+//| วางออเดอร์ตามสัญญาณ (stop breakout หรือ limit pullback)            |
+//+------------------------------------------------------------------+
+void PlaceStraddle(bool allowBuy, bool allowSell, bool useLimit, bool flip, string trigTxt)
   {
    if(!allowBuy && !allowSell)
       return;
@@ -388,43 +453,12 @@ void PlaceStraddle(bool allowBuy, bool allowSell, string trigTxt)
      }
 
    int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-   double point  = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-
-   // ราคาอ้างอิง = ราคาปิดแท่งที่เพิ่งปิด (index 1)
    double anchor = iClose(_Symbol, InpEntryTF, 1);
    if(anchor <= 0.0)
       return;
+   double upLvl = NormalizeDouble(anchor + entryDist, digits); // เหนือราคา
+   double dnLvl = NormalizeDouble(anchor - entryDist, digits); // ใต้ราคา
 
-   // ---------- Buy Stop ----------
-   double buyPrice = NormalizeDouble(anchor + entryDist, digits);
-   double buySL    = NormalizeDouble(buyPrice - slDist, digits);
-   double buyTP    = NormalizeDouble(buyPrice + tpDist, digits);
-
-   // ---------- Sell Stop ----------
-   double sellPrice = NormalizeDouble(anchor - entryDist, digits);
-   double sellSL    = NormalizeDouble(sellPrice + slDist, digits);
-   double sellTP    = NormalizeDouble(sellPrice - tpDist, digits);
-
-   // ตรวจ stops level ขั้นต่ำของโบรก (ระยะ pending จากราคาตลาดปัจจุบัน)
-   long   stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   double minDist    = stopsLevel * point;
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-
-   // Buy Stop ต้องอยู่สูงกว่า Ask อย่างน้อย stops level
-   if(buyPrice - ask < minDist)
-      buyPrice = NormalizeDouble(ask + minDist + point, digits);
-   // Sell Stop ต้องอยู่ต่ำกว่า Bid อย่างน้อย stops level
-   if(bid - sellPrice < minDist)
-      sellPrice = NormalizeDouble(bid - minDist - point, digits);
-
-   // ปรับ SL/TP ตามราคา entry ที่อาจถูกเลื่อน
-   buySL  = NormalizeDouble(buyPrice - slDist, digits);
-   buyTP  = NormalizeDouble(buyPrice + tpDist, digits);
-   sellSL = NormalizeDouble(sellPrice + slDist, digits);
-   sellTP = NormalizeDouble(sellPrice - tpDist, digits);
-
-   // ลอต (คิดจากระยะ SL)
    double lot = CalcLot(slDist);
    if(lot <= 0.0)
      {
@@ -432,7 +466,6 @@ void PlaceStraddle(bool allowBuy, bool allowSell, string trigTxt)
       return;
      }
 
-   // เวลาและประเภทหมดอายุของ pending
    ENUM_ORDER_TYPE_TIME typeTime = ORDER_TIME_GTC;
    datetime expiration = 0;
    if(InpExpireMinutes > 0)
@@ -443,22 +476,71 @@ void PlaceStraddle(bool allowBuy, bool allowSell, string trigTxt)
 
    string cmt = (StringLen(trigTxt) > 0 ? InpComment + " " + trigTxt : InpComment) + " Order-1";
 
-   // วาง Buy Stop (เฉพาะฝั่งที่อนุญาต)
+   // Stop: buy=บน, sell=ล่าง | Limit Same: buy=ล่าง(รอย่อ), sell=บน(รอเด้ง) | Limit Flip: สลับทิศ
+   // ฝั่ง "Buy signal"
    if(allowBuy)
      {
-      if(!trade.BuyStop(lot, buyPrice, _Symbol, buySL, buyTP, typeTime, expiration, cmt))
-         PrintFormat("วาง Buy Stop ไม่สำเร็จ err=%d", trade.ResultRetcode());
-      else
-         PrintFormat("[%s] Buy Stop @%.*f SL=%.*f TP=%.*f lot=%.2f", trigTxt, digits, buyPrice, digits, buySL, digits, buyTP, lot);
+      bool   oBuy = (useLimit && flip) ? false : true;
+      bool   oLim = useLimit;
+      double oLvl = useLimit ? (flip ? upLvl : dnLvl) : upLvl;
+      PlacePending(oBuy, oLim, oLvl, slDist, tpDist, lot, typeTime, expiration, cmt);
      }
-
-   // วาง Sell Stop (เฉพาะฝั่งที่อนุญาต)
+   // ฝั่ง "Sell signal"
    if(allowSell)
      {
-      if(!trade.SellStop(lot, sellPrice, _Symbol, sellSL, sellTP, typeTime, expiration, cmt))
-         PrintFormat("วาง Sell Stop ไม่สำเร็จ err=%d", trade.ResultRetcode());
-      else
-         PrintFormat("[%s] Sell Stop @%.*f SL=%.*f TP=%.*f lot=%.2f", trigTxt, digits, sellPrice, digits, sellSL, digits, sellTP, lot);
+      bool   oBuy = (useLimit && flip) ? true : false;
+      bool   oLim = useLimit;
+      double oLvl = useLimit ? (flip ? dnLvl : upLvl) : dnLvl;
+      PlacePending(oBuy, oLim, oLvl, slDist, tpDist, lot, typeTime, expiration, cmt);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Trailing SL ตาม ATR (เลื่อนไปทางกำไรเท่านั้น)                       |
+//+------------------------------------------------------------------+
+void ManageTrailing()
+  {
+   double atr = GetATR();
+   if(atr <= 0.0)
+      return;
+   double trailD = atr * InpTrailMult;
+   double startD = atr * InpTrailStartMult;
+
+   int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   double point  = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   long   stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDist    = stopsLevel * point;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol)        continue;
+
+      long   ptype = PositionGetInteger(POSITION_TYPE);
+      double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+      double curSL = PositionGetDouble(POSITION_SL);
+      double curTP = PositionGetDouble(POSITION_TP);
+
+      if(ptype == POSITION_TYPE_BUY)
+        {
+         double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         if((bid - entry) < startD) continue;                 // ยังกำไรไม่ถึงเกณฑ์
+         double nSL = NormalizeDouble(bid - trailD, digits);
+         if(nSL > bid - minDist) nSL = NormalizeDouble(bid - minDist, digits); // เคารพ stops level
+         if(nSL > curSL || curSL == 0.0)
+            trade.PositionModify(tk, nSL, curTP);
+        }
+      else if(ptype == POSITION_TYPE_SELL)
+        {
+         double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         if((entry - ask) < startD) continue;
+         double nSL = NormalizeDouble(ask + trailD, digits);
+         if(nSL < ask + minDist) nSL = NormalizeDouble(ask + minDist, digits);
+         if(nSL < curSL || curSL == 0.0)
+            trade.PositionModify(tk, nSL, curTP);
+        }
      }
   }
 
