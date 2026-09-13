@@ -36,11 +36,6 @@ enum ENUM_RSI_DIR
    RSI_A_OBSELL = 1, // A: OB->Sell / OS->Buy
    RSI_B_OBBUY  = 2  // B: OB->Buy / OS->Sell
   };
-enum ENUM_DIST_MODE
-  {
-   DIST_ATR   = 0, // ATR x Multiplier
-   DIST_FIXED = 1  // Fixed distance (price units)
-  };
 
 //====================== INPUTS ======================================
 input group "=== Entry Mode ==="
@@ -65,20 +60,16 @@ input bool     InpTradeThursday   = true;    // เทรดวันพฤห�
 input bool     InpTradeFriday     = true;    // เทรดวันศุกร์
 input bool     InpTradeSaturday   = false;   // เทรดวันเสาร์
 
-input group "=== Distance Mode ==="
-input ENUM_DIST_MODE InpDistMode  = DIST_ATR; // วิธีคิดระยะ: ATR x Multiplier หรือ Fixed distance
-
-input group "=== Timeframe & ATR (ใช้เมื่อ Distance Mode = ATR) ==="
+input group "=== Timeframe & ATR ==="
 input ENUM_TIMEFRAMES InpEntryTF  = PERIOD_M15; // Timeframe ของแท่งที่ใช้ (ค่าเริ่ม 15M)
 input int      InpATRPeriod       = 14;      // ATR Period
 input double   InpEntryMultiplier = 1.0;     // ตัวคูณ ATR สำหรับระยะวางออเดอร์ (entry offset)
-input double   InpSLMultiplier    = 1.0;     // ตัวคูณ ATR สำหรับระยะ SL
-input double   InpRR              = 2.0;     // Risk:Reward (TP = ระยะSL x RR)
+input double   InpSLMultiplier    = 1.0;     // ตัวคูณ ATR สำหรับระยะ SL (ใช้เมื่อ SL Distance = 0)
+input double   InpRR              = 2.0;     // Risk:Reward (TP = ระยะSL x RR, ใช้เมื่อ TP Distance = 0)
 
-input group "=== Fixed Distance (ใช้เมื่อ Distance Mode = Fixed) หน่วย=ราคา 1=1.0 ==="
-input double   InpEntryDistFix    = 1.0;     // ระยะวางออเดอร์ (price) — เช่น XAUUSD 1 = 4000->4001
-input double   InpSLDistFix       = 1.0;     // ระยะ SL (price)
-input double   InpTPDistFix       = 2.0;     // ระยะ TP (price)
+input group "=== Fixed TP/SL Distance (หน่วย=ราคา 1=1.0; 0 = ใช้ ATR) ==="
+input double   InpSLDistFix       = 0.0;     // SL Distance (0 = ใช้ SL x ATR) — เช่น XAUUSD 1 = ระยะ 1.0
+input double   InpTPDistFix       = 0.0;     // TP Distance (0 = ใช้ ระยะSL x RR)
 
 input group "=== การจัดการเงิน / ออเดอร์ ==="
 input double   InpRiskMoney       = 10.0;    // เงินเสี่ยงต่อไม้ (สกุลบัญชี) -> lot = RiskMoney / ระยะSL
@@ -372,26 +363,16 @@ void PlaceStraddle(bool allowBuy, bool allowSell, string trigTxt)
    if(!allowBuy && !allowSell)
       return;
 
-   // ระยะ Entry/SL/TP ตาม Distance Mode
-   double entryDist, slDist, tpDist;
-   if(InpDistMode == DIST_FIXED)
+   // จุดเข้า (entry) ใช้ ATR เสมอ; SL/TP ถ้ากรอก Distance > 0 จะใช้ระยะคงที่แทน ATR
+   double atr = GetATR();
+   if(atr <= 0.0)
      {
-      entryDist = InpEntryDistFix;
-      slDist    = InpSLDistFix;
-      tpDist    = InpTPDistFix;
+      Print("ATR ไม่พร้อม ข้ามรอบนี้");
+      return;
      }
-   else
-     {
-      double atr = GetATR();
-      if(atr <= 0.0)
-        {
-         Print("ATR ไม่พร้อม ข้ามรอบนี้");
-         return;
-        }
-      entryDist = atr * InpEntryMultiplier;
-      slDist    = atr * InpSLMultiplier;
-      tpDist    = slDist * InpRR;
-     }
+   double entryDist = atr * InpEntryMultiplier;
+   double slDist    = InpSLDistFix > 0.0 ? InpSLDistFix : atr * InpSLMultiplier;
+   double tpDist    = InpTPDistFix > 0.0 ? InpTPDistFix : slDist * InpRR;
    if(slDist <= 0.0)
       return;
 
@@ -544,7 +525,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 
    double slDist = MathAbs(entry - slPrice);
    if(slDist <= 0.0)    return;
-   double tpDist = (InpDistMode == DIST_FIXED) ? InpTPDistFix : slDist * InpRR;
+   double tpDist = InpTPDistFix > 0.0 ? InpTPDistFix : slDist * InpRR;
 
    int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    double lvl    = NormalizeDouble(entry, digits);
