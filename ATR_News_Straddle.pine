@@ -36,13 +36,6 @@ rsiTrigMode = input.string("On Cross Into Zone", title="RSI Trigger",
 rsiDir    = input.string("Both (straddle)", title="RSI Direction",
             options=["Both (straddle)", "A: OB→Sell / OS→Buy", "B: OB→Buy / OS→Sell"], group="RSI Entry",
             tooltip="เลือกว่าสัญญาณ OB/OS จะวางฝั่งไหน\nBoth = วางทั้ง 2 ฝั่งเหมือนโหมดข่าว")
-rsiOrderType = input.string("Stop (breakout)", title="RSI Order Type",
-            options=["Stop (breakout)", "Limit (pullback)"], group="RSI Entry",
-            tooltip="Stop = ยิงเบรกเอาท์ (เดิม)\nLimit = รอ pullback ให้ได้ราคาดีกว่าแล้วค่อยเข้า (เฉพาะ entry ของ RSI)")
-rsiLimitDir = input.string("Same dir (Buy=BuyLimit dip)", title="RSI Limit Mapping",
-            options=["Same dir (Buy=BuyLimit dip)", "Flip (Buy=SellLimit)"], group="RSI Entry",
-            tooltip="ใช้เมื่อ RSI Order Type = Limit\nSame dir = ฝั่ง Buy → Buy Limit ใต้ราคา (รอย่อ), ฝั่ง Sell → Sell Limit เหนือราคา (รอเด้ง)\nFlip = สลับทิศ (ฝั่ง Buy → Sell Limit เหนือราคา)")
-
 // --- News Time (วาง pending ตอนแท่งปิด ณ เวลานี้) ---
 newsHour   = input.int(19, title="News Hour (0-23)",  minval=0, maxval=23, group="News Time", inline="nt")
 newsMinute = input.int(30, title="Minute (0-59)",     minval=0, maxval=59, group="News Time", inline="nt")
@@ -343,7 +336,6 @@ var array<int>   pExpire = array.new_int()       // expire time (ms, 0 = never)
 var array<int>   pBar    = array.new_int()
 var array<int>   pTime   = array.new_int()
 var array<int>   pGen    = array.new_int()       // order generation (1,2,3..)
-var array<bool>  pIsLim  = array.new<bool>()     // true = limit order, false = stop order
 
 // active trades (each independent)
 var array<bool>  oIsBuy = array.new<bool>()
@@ -410,7 +402,6 @@ f_closeTrade(int idx, float closePx, float rVal) =>
         array.push(pBar,   bar_index)
         array.push(pTime,  time)
         array.push(pGen,   tGen + 1)
-        array.push(pIsLim, false)
         regLabel(label.new(x=bar_index, y=tEntry,
                            text="Re-Entry → Order-" + str.tostring(tGen + 1),
                            style=label.style_label_left, color=color.new(color.orange, 55),
@@ -481,10 +472,8 @@ if barstate.isconfirmed
         for i = array.size(pLevel) - 1 to 0
             bool  isBuyP = array.get(pIsBuy, i)
             float lvl    = array.get(pLevel, i)
-            bool  isLimP = array.get(pIsLim, i)
             bool  canTrig = bar_index > array.get(pBar, i)
-            // Stop: buy=high>=lvl, sell=low<=lvl | Limit: buy=low<=lvl, sell=high>=lvl
-            bool  hitCond = isLimP ? (isBuyP ? low <= lvl : high >= lvl) : (isBuyP ? high >= lvl : low <= lvl)
+            bool  hitCond = isBuyP ? high >= lvl : low <= lvl
             bool  triggered = canTrig and hitCond
 
             int openCnt = array.size(oEntry)
@@ -506,7 +495,7 @@ if barstate.isconfirmed
                 regLine(line.new(x1=bar_index, y1=entry, x2=bar_index, y2=sl,
                                  color=color.new(color.red, 70), width=1, style=line.style_arrow_right))
                 float lotSz = slD > 0 ? riskAmt / (slD * lotRatio) : na
-                string info = "Order-" + str.tostring(gen) + " " + (isBuyP ? "BUY" : "SELL") + (isLimP ? " (Limit)" : "") +
+                string info = "Order-" + str.tostring(gen) + " " + (isBuyP ? "BUY" : "SELL") +
                               (na(lotSz) ? "" : "\nSize " + str.tostring(lotSz, "#.###") + " lot") +
                               "\nSL " + str.tostring(slD, format.mintick) + " · TP " + str.tostring(tpD, format.mintick)
                 regLabel(label.new(x=bar_index, y=entry, text=info,
@@ -531,7 +520,6 @@ if barstate.isconfirmed
                 array.remove(pBar,   i)
                 array.remove(pTime,  i)
                 array.remove(pGen,   i)
-                array.remove(pIsLim, i)
             else
                 int exp = array.get(pExpire, i)
                 if exp > 0 and time >= exp
@@ -546,7 +534,6 @@ if barstate.isconfirmed
                     array.remove(pBar,   i)
                     array.remove(pTime,  i)
                     array.remove(pGen,   i)
-                    array.remove(pIsLim, i)
 
     // 6.2b ----- OCO: ฝั่งหนึ่งถูกทริก -> ยกเลิก pending อีกฝั่งทั้งหมด -----
     if ocoCancel and triggeredNow and array.size(pLevel) > 0
@@ -562,7 +549,6 @@ if barstate.isconfirmed
         array.clear(pBar)
         array.clear(pTime)
         array.clear(pGen)
-        array.clear(pIsLim)
 
     // 6.3 ----- วาง pending straddle ใหม่ ตาม Entry Mode -----
     // ตัดสินสัญญาณ + ฝั่งที่อนุญาต
@@ -590,10 +576,6 @@ if barstate.isconfirmed
             allowSell := allowSell or rsiSigOS
         trigTxt := (str.length(trigTxt) > 0 ? trigTxt + " + " : "") + "RSI " + str.tostring(rsiVal, "#.#")
 
-    // RSI Limit: ใช้ limit เฉพาะเมื่อ RSI ทริก (และ News ไม่ได้ทริกในแท่งเดียวกัน)
-    bool useLimit = rsiTrig and not newsTrig and rsiOrderType == "Limit (pullback)"
-    bool limitFlip = rsiLimitDir == "Flip (Buy=SellLimit)"
-
     if (newsTrig or rsiTrig) and (allowBuy or allowSell) and not blockNew and not na(atrVal) and atrVal > 0
         float anchor   = close
         float entryDist = atrVal * entryMult                       // entry ใช้ ATR เสมอ
@@ -603,34 +585,24 @@ if barstate.isconfirmed
         float dnLvl    = anchor - entryDist   // ระดับใต้ราคา
         int   expMs    = expireMin > 0 ? closeMs + expireMin * 60000 : 0
 
-        // สร้างรายการออเดอร์: [isBuyOrder, level, isLimit] สูงสุด 2 ตัว
-        // Stop: buy=บน, sell=ล่าง | Limit Same: buy=ล่าง(รอย่อ), sell=บน(รอเด้ง) | Limit Flip: buy signal->sell บน, sell signal->buy ล่าง
-        // ฝั่ง "Buy signal"
         if allowBuy
-            bool  oBuy = useLimit and limitFlip ? false : true
-            float oLvl = useLimit ? (limitFlip ? upLvl : dnLvl) : upLvl
-            array.push(pIsBuy, oBuy)
-            array.push(pLevel, oLvl)
+            array.push(pIsBuy, true)
+            array.push(pLevel, upLvl)
             array.push(pSLd,   slDist)
             array.push(pTPd,   tpDist)
             array.push(pExpire, expMs)
             array.push(pBar,   bar_index)
             array.push(pTime,  time)
             array.push(pGen,   1)
-            array.push(pIsLim, useLimit)
-        // ฝั่ง "Sell signal"
         if allowSell
-            bool  oBuy = useLimit and limitFlip ? true : false
-            float oLvl = useLimit ? (limitFlip ? dnLvl : upLvl) : dnLvl
-            array.push(pIsBuy, oBuy)
-            array.push(pLevel, oLvl)
+            array.push(pIsBuy, false)
+            array.push(pLevel, dnLvl)
             array.push(pSLd,   slDist)
             array.push(pTPd,   tpDist)
             array.push(pExpire, expMs)
             array.push(pBar,   bar_index)
             array.push(pTime,  time)
             array.push(pGen,   1)
-            array.push(pIsLim, useLimit)
 
         if showPendingDraw
             // วาดตามรายการล่าสุดที่ push (อ่านย้อนจากคิว)
@@ -641,14 +613,13 @@ if barstate.isconfirmed
                 if pidx >= 0
                     bool  db = array.get(pIsBuy, pidx)
                     float dl = array.get(pLevel, pidx)
-                    bool  dlim = array.get(pIsLim, pidx)
-                    string kindTx = (db ? "Buy " : "Sell ") + (dlim ? "Limit " : "Stop ")
+                    string kindTx = (db ? "Buy Stop " : "Sell Stop ")
                     color  dc = db ? color.green : color.red
                     regLine(line.new(x1=bar_index, y1=dl, x2=bar_index+6, y2=dl, color=color.new(dc, 20), width=2))
                     regLabel(label.new(x=bar_index+6, y=dl, text=kindTx + str.tostring(dl, format.mintick),
                                        style=label.style_label_left, color=color.new(dc, 80), textcolor=dc, size=size.tiny))
             regLabel(label.new(x=bar_index, y=anchor,
-                               text=trigTxt + (useLimit ? " (Limit)" : "") + "\nSL " + str.tostring(slDist, format.mintick) + " · TP " + str.tostring(tpDist, format.mintick),
+                               text=trigTxt + "\nSL " + str.tostring(slDist, format.mintick) + " · TP " + str.tostring(tpDist, format.mintick),
                                style=label.style_label_center, color=color.new(color.gray, 30),
                                textcolor=color.white, size=size.tiny))
 
@@ -1279,11 +1250,6 @@ if showSettingsTable and barstate.islast
         rowBg := ri % 2 == 1 ? lxRowA : lxRowB
         table.cell(settingsTbl, 0, ri, "RSI Trig · Dir", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
         table.cell(settingsTbl, 1, ri, (rsiTrigMode == "While In Zone" ? "Zone" : rsiTrigMode == "On Exit Zone (reversal)" ? "Exit" : "Enter") + " · " + rsiDir,
-                   text_color=lxText, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
-        ri += 1
-        rowBg := ri % 2 == 1 ? lxRowA : lxRowB
-        table.cell(settingsTbl, 0, ri, "RSI Order", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
-        table.cell(settingsTbl, 1, ri, rsiOrderType == "Limit (pullback)" ? ("Limit " + (rsiLimitDir == "Flip (Buy=SellLimit)" ? "Flip" : "Same")) : "Stop",
                    text_color=lxText, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
         ri += 1
 
