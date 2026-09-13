@@ -9,6 +9,27 @@
 
 ---
 
+## Entry Mode (ทริกเกอร์การเข้า) — มีทั้งใน EA และ Pine
+
+เลือกได้ว่าจะให้ "วางออเดอร์ ATR straddle" ตอนไหน:
+
+| Mode | ทริกเมื่อ |
+|---|---|
+| **1. News Time** | แท่งปิด ณ เวลาข่าวที่ตั้ง (เดิม) |
+| **2. RSI OB/OS** | ดู RSI ที่ราคาปิดแท่ง ถ้าเข้าโซน Overbought/Oversold |
+| **3. News + RSI** | ทริกด้วยอย่างใดอย่างหนึ่ง |
+
+**RSI settings:** `Period`, `TF`, `Overbought` (70), `Oversold` (30)
+- **Trigger**: `On Cross Into Zone` (ทริกตอนตัดเข้าโซน กันวางซ้ำทุกแท่ง) หรือ `While In Zone` (ทุกแท่งที่ยังอยู่ในโซน)
+- **Direction**:
+  - `Both (straddle)` — วางทั้ง 2 ฝั่ง (ค่าเริ่ม เหมือนโหมดข่าว)
+  - `A: OB→Sell / OS→Buy` — สวนทาง (mean reversion)
+  - `B: OB→Buy / OS→Sell` — ตามโมเมนตัม
+
+> เมื่อทริก ไม่ว่าโหมดไหน → ใช้กลไกวางออเดอร์ **เหมือนเดิม** (ระยะ ATR, SL/TP ตาม RR, ลอตจากเงินเสี่ยง, pending หมดอายุ)
+
+---
+
 ## EA_ATR_News (MT5)
 
 Expert Advisor สำหรับ MetaTrader 5 แนว **ดักเบรกข่าว (News Straddle Breakout)** โดยใช้ค่า **ATR** กำหนดระยะ

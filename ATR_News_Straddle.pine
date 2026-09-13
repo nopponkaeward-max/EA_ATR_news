@@ -20,6 +20,23 @@ indicator("ATR News Straddle", shorttitle="ATR_NS", overlay=true,
 // --- 1. INPUT SETTINGS ---
 // ==========================================
 
+// --- Entry Mode ---
+entryMode = input.string("1. News Time", title="Entry Mode",
+            options=["1. News Time", "2. RSI OB/OS", "3. News + RSI"], group="Entry Mode",
+            tooltip="1. News Time = วางเมื่อแท่งปิด ณ เวลาข่าว\n2. RSI OB/OS = วางเมื่อ RSI ถึงโซน overbought/oversold\n3. News + RSI = ทริกด้วยอย่างใดอย่างหนึ่ง")
+
+// --- RSI (ใช้กับ Entry Mode 2/3) ---
+rsiPeriod = input.int(14,    title="RSI Period",       minval=1,   group="RSI Entry", inline="r0")
+rsiTF     = input.timeframe("", title="RSI TF (ว่าง=TF กราฟ)",      group="RSI Entry", inline="r0")
+rsiOB     = input.float(70.0, title="Overbought",       minval=1, maxval=100, group="RSI Entry", inline="r1")
+rsiOS     = input.float(30.0, title="Oversold",         minval=0, maxval=99,  group="RSI Entry", inline="r1")
+rsiTrigMode = input.string("On Cross Into Zone", title="RSI Trigger",
+            options=["On Cross Into Zone", "While In Zone"], group="RSI Entry",
+            tooltip="On Cross Into Zone = ทริกตอน RSI ตัดเข้าโซน (กันวางซ้ำทุกแท่ง)\nWhile In Zone = ทริกทุกแท่งที่ RSI ยังอยู่ในโซน")
+rsiDir    = input.string("Both (straddle)", title="RSI Direction",
+            options=["Both (straddle)", "A: OB→Sell / OS→Buy", "B: OB→Buy / OS→Sell"], group="RSI Entry",
+            tooltip="เลือกว่าสัญญาณ OB/OS จะวางฝั่งไหน\nBoth = วางทั้ง 2 ฝั่งเหมือนโหมดข่าว")
+
 // --- News Time (วาง pending ตอนแท่งปิด ณ เวลานี้) ---
 newsHour   = input.int(19, title="News Hour (0-23)",  minval=0, maxval=23, group="News Time", inline="nt")
 newsMinute = input.int(30, title="Minute (0-59)",     minval=0, maxval=59, group="News Time", inline="nt")
@@ -250,7 +267,23 @@ int closeHr = hour(closeMs, tzStr)
 int closeMn = minute(closeMs, tzStr)
 int closeDw = dayofweek(closeMs, tzStr)
 
-bool isNewsClose = closeHr == newsHour and closeMn == newsMinute and f_isTradeDay(closeDw)
+bool isTradeDay  = f_isTradeDay(closeDw)
+bool isNewsClose = closeHr == newsHour and closeMn == newsMinute and isTradeDay
+
+// ---- RSI ----
+float rsiSrc = ta.rsi(close, rsiPeriod)
+float rsiVal = rsiTF == "" ? rsiSrc : request.security(syminfo.tickerid, rsiTF, rsiSrc, lookahead=barmerge.lookahead_off)
+
+bool inOB = not na(rsiVal) and rsiVal >= rsiOB
+bool inOS = not na(rsiVal) and rsiVal <= rsiOS
+bool crossOB = inOB and not (na(rsiVal[1]) or rsiVal[1] >= rsiOB)   // RSI ตัดขึ้นเข้าโซน OB
+bool crossOS = inOS and not (na(rsiVal[1]) or rsiVal[1] <= rsiOS)   // RSI ตัดลงเข้าโซน OS
+
+bool rsiSigOB = rsiTrigMode == "While In Zone" ? inOB : crossOB
+bool rsiSigOS = rsiTrigMode == "While In Zone" ? inOS : crossOS
+
+bool useNews = entryMode == "1. News Time" or entryMode == "3. News + RSI"
+bool useRSI  = entryMode == "2. RSI OB/OS"  or entryMode == "3. News + RSI"
 
 // ==========================================
 // --- 6. TRADE STATE (pending + active) ---
@@ -411,8 +444,31 @@ if barstate.isconfirmed
                     array.remove(pBar,   i)
                     array.remove(pTime,  i)
 
-    // 6.3 ----- วาง pending straddle ใหม่ เมื่อถึงเวลาข่าว -----
-    if isNewsClose and not na(atrVal) and atrVal > 0
+    // 6.3 ----- วาง pending straddle ใหม่ ตาม Entry Mode -----
+    // ตัดสินสัญญาณ + ฝั่งที่อนุญาต
+    bool newsTrig = useNews and isNewsClose
+    bool rsiTrig  = useRSI  and isTradeDay and (rsiSigOB or rsiSigOS)
+
+    bool allowBuy  = false
+    bool allowSell = false
+    string trigTxt = ""
+    if newsTrig
+        allowBuy  := true
+        allowSell := true
+        trigTxt := "News " + f_hhmm(newsHour, newsMinute)
+    if rsiTrig
+        if rsiDir == "Both (straddle)"
+            allowBuy  := true
+            allowSell := true
+        else if rsiDir == "A: OB→Sell / OS→Buy"
+            allowSell := allowSell or rsiSigOB
+            allowBuy  := allowBuy  or rsiSigOS
+        else
+            allowBuy  := allowBuy  or rsiSigOB
+            allowSell := allowSell or rsiSigOS
+        trigTxt := (str.length(trigTxt) > 0 ? trigTxt + " + " : "") + "RSI " + str.tostring(rsiVal, "#.#")
+
+    if (newsTrig or rsiTrig) and (allowBuy or allowSell) and not na(atrVal) and atrVal > 0
         float anchor   = close
         float entryDist = atrVal * entryMult
         float slDist    = atrVal * slMult
@@ -421,43 +477,46 @@ if barstate.isconfirmed
         float sellLvl  = anchor - entryDist
         int   expMs    = expireMin > 0 ? closeMs + expireMin * 60000 : 0
 
-        // buy stop
-        array.push(pIsBuy, true)
-        array.push(pLevel, buyLvl)
-        array.push(pSLd,   slDist)
-        array.push(pTPd,   tpDist)
-        array.push(pExpire, expMs)
-        array.push(pBar,   bar_index)
-        array.push(pTime,  time)
-        // sell stop
-        array.push(pIsBuy, false)
-        array.push(pLevel, sellLvl)
-        array.push(pSLd,   slDist)
-        array.push(pTPd,   tpDist)
-        array.push(pExpire, expMs)
-        array.push(pBar,   bar_index)
-        array.push(pTime,  time)
+        if allowBuy
+            array.push(pIsBuy, true)
+            array.push(pLevel, buyLvl)
+            array.push(pSLd,   slDist)
+            array.push(pTPd,   tpDist)
+            array.push(pExpire, expMs)
+            array.push(pBar,   bar_index)
+            array.push(pTime,  time)
+        if allowSell
+            array.push(pIsBuy, false)
+            array.push(pLevel, sellLvl)
+            array.push(pSLd,   slDist)
+            array.push(pTPd,   tpDist)
+            array.push(pExpire, expMs)
+            array.push(pBar,   bar_index)
+            array.push(pTime,  time)
 
         if showPendingDraw
-            regLine(line.new(x1=bar_index, y1=buyLvl, x2=bar_index+6, y2=buyLvl,
-                             color=color.new(color.green, 20), width=2))
-            regLine(line.new(x1=bar_index, y1=sellLvl, x2=bar_index+6, y2=sellLvl,
-                             color=color.new(color.red, 20), width=2))
-            regLabel(label.new(x=bar_index+6, y=buyLvl, text="Buy Stop " + str.tostring(buyLvl, format.mintick),
-                               style=label.style_label_left, color=color.new(color.green, 80),
-                               textcolor=color.green, size=size.tiny))
-            regLabel(label.new(x=bar_index+6, y=sellLvl, text="Sell Stop " + str.tostring(sellLvl, format.mintick),
-                               style=label.style_label_left, color=color.new(color.red, 80),
-                               textcolor=color.red, size=size.tiny))
+            if allowBuy
+                regLine(line.new(x1=bar_index, y1=buyLvl, x2=bar_index+6, y2=buyLvl,
+                                 color=color.new(color.green, 20), width=2))
+                regLabel(label.new(x=bar_index+6, y=buyLvl, text="Buy Stop " + str.tostring(buyLvl, format.mintick),
+                                   style=label.style_label_left, color=color.new(color.green, 80),
+                                   textcolor=color.green, size=size.tiny))
+            if allowSell
+                regLine(line.new(x1=bar_index, y1=sellLvl, x2=bar_index+6, y2=sellLvl,
+                                 color=color.new(color.red, 20), width=2))
+                regLabel(label.new(x=bar_index+6, y=sellLvl, text="Sell Stop " + str.tostring(sellLvl, format.mintick),
+                                   style=label.style_label_left, color=color.new(color.red, 80),
+                                   textcolor=color.red, size=size.tiny))
             regLabel(label.new(x=bar_index, y=anchor,
-                               text="News " + f_hhmm(newsHour, newsMinute) +
-                                    "\nATR " + str.tostring(atrVal, format.mintick),
+                               text=trigTxt + "\nATR " + str.tostring(atrVal, format.mintick),
                                style=label.style_label_center, color=color.new(color.gray, 30),
                                textcolor=color.white, size=size.tiny))
 
-// ---- news marker ----
-plotshape(isNewsClose, title="News Bar", style=shape.triangleup, location=location.belowbar,
+// ---- trigger markers ----
+plotshape(useNews and isNewsClose, title="News Bar", style=shape.triangleup, location=location.belowbar,
           color=color.new(color.orange, 0), size=size.tiny)
+plotshape(useRSI and isTradeDay and (rsiSigOB or rsiSigOS), title="RSI Signal", style=shape.diamond,
+          location=location.abovebar, color=color.new(color.fuchsia, 0), size=size.tiny)
 
 // ---- Plot เส้น TP/SL ของออเดอร์ล่าสุดที่ยังเปิดอยู่ ----
 float lastTP = array.size(oTP) > 0 ? array.get(oTP, array.size(oTP) - 1) : na
@@ -559,7 +618,7 @@ var table dailyStatsTbl = table.new(f_tablePos(dailyTablePos),    6, 34,
 var table monthlyTbl    = table.new(f_tablePos(monthlyTablePos),  5, statMonths + 3,
      bgcolor=lxRowA, frame_width=2, frame_color=lxFrame, border_width=1, border_color=lxGrid)
 
-var table settingsTbl   = table.new(f_tablePos(settingsTablePos), 2, 22,
+var table settingsTbl   = table.new(f_tablePos(settingsTablePos), 2, 30,
      bgcolor=lxRowA, frame_width=2, frame_color=lxFrame, border_width=1, border_color=lxGrid)
 
 var bool mg1 = false
@@ -965,7 +1024,7 @@ if showMonthlyTable and barstate.islast and statMode == "2. Last N Months"
 // ==========================================
 
 if showSettingsTable and barstate.islast
-    table.clear(settingsTbl, 0, 0, 1, 21)
+    table.clear(settingsTbl, 0, 0, 1, 29)
     int ri = 0
 
     string daysStr = ""
@@ -983,6 +1042,26 @@ if showSettingsTable and barstate.islast
     table.cell(settingsTbl, 0, ri, "◆  SETTINGS SUMMARY", text_color=lxTitleTx, text_size=size.small, bgcolor=lxHeadBg)
     table.cell(settingsTbl, 1, ri, "",                    text_color=lxTitleTx, text_size=size.small, bgcolor=lxHeadBg)
     ri += 1
+
+    // Entry Mode section
+    table.cell(settingsTbl, 0, ri, "─── Entry Mode ───", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg, text_halign=text.align_left)
+    table.cell(settingsTbl, 1, ri, "",                    text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+    ri += 1
+    rowBg := ri % 2 == 1 ? lxRowA : lxRowB
+    table.cell(settingsTbl, 0, ri, "Mode", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
+    table.cell(settingsTbl, 1, ri, entryMode, text_color=lxCyan, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
+    ri += 1
+    if useRSI
+        rowBg := ri % 2 == 1 ? lxRowA : lxRowB
+        table.cell(settingsTbl, 0, ri, "RSI OB/OS", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
+        table.cell(settingsTbl, 1, ri, str.tostring(rsiPeriod) + " · " + str.tostring(rsiOB, "#") + "/" + str.tostring(rsiOS, "#"),
+                   text_color=lxText, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
+        ri += 1
+        rowBg := ri % 2 == 1 ? lxRowA : lxRowB
+        table.cell(settingsTbl, 0, ri, "RSI Trig · Dir", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
+        table.cell(settingsTbl, 1, ri, (rsiTrigMode == "While In Zone" ? "Zone" : "Cross") + " · " + rsiDir,
+                   text_color=lxText, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
+        ri += 1
 
     // News section
     table.cell(settingsTbl, 0, ri, "─── News / Time ───", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg, text_halign=text.align_left)

@@ -17,7 +17,37 @@
 
 #include <Trade\Trade.mqh>
 
+//====================== ENUMS =======================================
+enum ENUM_ENTRY_MODE
+  {
+   ENTRY_NEWS     = 0,  // 1. News Time
+   ENTRY_RSI      = 1,  // 2. RSI OB/OS
+   ENTRY_NEWS_RSI = 2   // 3. News + RSI
+  };
+enum ENUM_RSI_TRIG
+  {
+   RSI_ON_CROSS      = 0, // ตัดเข้าโซน (กันวางซ้ำ)
+   RSI_WHILE_IN_ZONE = 1  // ทุกแท่งที่อยู่ในโซน
+  };
+enum ENUM_RSI_DIR
+  {
+   RSI_BOTH     = 0, // Both (straddle)
+   RSI_A_OBSELL = 1, // A: OB->Sell / OS->Buy
+   RSI_B_OBBUY  = 2  // B: OB->Buy / OS->Sell
+  };
+
 //====================== INPUTS ======================================
+input group "=== Entry Mode ==="
+input ENUM_ENTRY_MODE InpEntryMode = ENTRY_NEWS; // โหมดเข้าออเดอร์
+
+input group "=== RSI (ใช้กับ Entry Mode 2/3) ==="
+input int             InpRSIPeriod = 14;            // RSI Period
+input ENUM_TIMEFRAMES InpRSITF     = PERIOD_CURRENT;// RSI Timeframe (CURRENT = TF เดียวกับ ATR/กราฟ)
+input double          InpRSIOB     = 70.0;          // Overbought
+input double          InpRSIOS     = 30.0;          // Oversold
+input ENUM_RSI_TRIG   InpRSITrig   = RSI_ON_CROSS;  // ทริกตอนตัดเข้าโซน หรือ ทุกแท่งในโซน
+input ENUM_RSI_DIR    InpRSIDir    = RSI_BOTH;      // ทิศทางเมื่อเจอ OB/OS
+
 input group "=== เวลาข่าว (เวลา Server ของโบรกเกอร์) ==="
 input int      InpNewsHour        = 19;      // ชั่วโมงข่าว (server time, 0-23)
 input int      InpNewsMinute      = 30;      // นาทีข่าว (server time, 0-59)
@@ -48,7 +78,8 @@ input string   InpComment         = "ATR_News";
 //====================== GLOBALS =====================================
 CTrade   trade;
 int      atrHandle = INVALID_HANDLE;
-datetime g_lastCycleBarTime = 0;   // เวลาแท่งของรอบที่วางไปแล้ว (กันวางซ้ำในรอบเดียว)
+int      rsiHandle = INVALID_HANDLE;
+datetime g_lastCycleBarTime = 0;   // เวลาแท่งล่าสุดที่ประมวลผลแล้ว (ประมวลผล 1 ครั้งต่อแท่ง)
 
 //+------------------------------------------------------------------+
 //| Init                                                             |
@@ -62,12 +93,20 @@ int OnInit()
       return(INIT_FAILED);
      }
 
+   rsiHandle = iRSI(_Symbol, InpRSITF, InpRSIPeriod, PRICE_CLOSE);
+   if(rsiHandle == INVALID_HANDLE)
+     {
+      Print("สร้าง RSI handle ไม่สำเร็จ");
+      return(INIT_FAILED);
+     }
+
    trade.SetExpertMagicNumber(InpMagicNumber);
    trade.SetDeviationInPoints(10);
    trade.SetTypeFillingBySymbol(_Symbol);
 
-   PrintFormat("EA_ATR_News เริ่มทำงาน | ข่าวเวลา %02d:%02d (server) | TF=%s | ATR=%d",
-               InpNewsHour, InpNewsMinute, EnumToString(InpEntryTF), InpATRPeriod);
+   PrintFormat("EA_ATR_News เริ่มทำงาน | Mode=%s | ข่าว %02d:%02d (server) | TF=%s | ATR=%d | RSI=%d(%.0f/%.0f)",
+               EnumToString(InpEntryMode), InpNewsHour, InpNewsMinute, EnumToString(InpEntryTF),
+               InpATRPeriod, InpRSIPeriod, InpRSIOB, InpRSIOS);
    return(INIT_SUCCEEDED);
   }
 
@@ -77,13 +116,15 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    if(atrHandle != INVALID_HANDLE)
-      Iuu_ReleaseHandle();
-  }
-
-void Iuu_ReleaseHandle()
-  {
-   IndicatorRelease(atrHandle);
-   atrHandle = INVALID_HANDLE;
+     {
+      IndicatorRelease(atrHandle);
+      atrHandle = INVALID_HANDLE;
+     }
+   if(rsiHandle != INVALID_HANDLE)
+     {
+      IndicatorRelease(rsiHandle);
+      rsiHandle = INVALID_HANDLE;
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -114,27 +155,70 @@ void OnTick()
    if(curBarOpen == 0)
       return;
 
-   // ตรวจ "แท่งใหม่": ถ้าแท่งปัจจุบันเพิ่งเปิด แปลว่าแท่งก่อนหน้า (index 1) เพิ่งปิด
+   // ประมวลผล 1 ครั้งต่อ "แท่งใหม่" (แท่งก่อนหน้า index 1 เพิ่งปิด)
    if(curBarOpen == g_lastCycleBarTime)
-      return; // รอบนี้จัดการไปแล้ว
+      return;
+   g_lastCycleBarTime = curBarOpen; // ทำเครื่องหมายว่าประมวลผลแท่งนี้แล้ว
 
-   // เวลาเปิดแท่งปัจจุบัน = เวลาปิดของแท่งข่าว
-   // ข่าว 19:30 -> แท่ง 19:15-19:30 ปิดตอน 19:30 -> แท่งใหม่เปิดที่ 19:30
+   // เวลาเปิดแท่งปัจจุบัน = เวลาปิดของแท่งที่เพิ่งจบ
    MqlDateTime bt;
    TimeToStruct(curBarOpen, bt);
 
-   if(bt.hour != InpNewsHour || bt.min != InpNewsMinute)
-      return; // ยังไม่ถึงเวลาข่าว
-
    if(!IsTradingDay(bt))
-     {
-      g_lastCycleBarTime = curBarOpen; // ทำเครื่องหมายว่าผ่านรอบนี้แล้ว
       return;
+
+   bool useNews = (InpEntryMode == ENTRY_NEWS || InpEntryMode == ENTRY_NEWS_RSI);
+   bool useRSI  = (InpEntryMode == ENTRY_RSI  || InpEntryMode == ENTRY_NEWS_RSI);
+
+   bool allowBuy  = false;
+   bool allowSell = false;
+   string trigTxt = "";
+
+   // --- News trigger ---
+   if(useNews && bt.hour == InpNewsHour && bt.min == InpNewsMinute)
+     {
+      allowBuy  = true;
+      allowSell = true;
+      trigTxt   = "News";
      }
 
-   // ถึงเวลาข่าว + แท่ง 15M ปิดพอดี -> วางออเดอร์
-   PlaceStraddle(curBarOpen);
-   g_lastCycleBarTime = curBarOpen; // กันวางซ้ำในรอบเดียวกัน
+   // --- RSI trigger ---
+   if(useRSI)
+     {
+      double rCur, rPrev;
+      if(GetRSI(rCur, rPrev))
+        {
+         bool inOB    = rCur >= InpRSIOB;
+         bool inOS    = rCur <= InpRSIOS;
+         bool crossOB = inOB && rPrev <  InpRSIOB;
+         bool crossOS = inOS && rPrev >  InpRSIOS;
+         bool sigOB   = (InpRSITrig == RSI_WHILE_IN_ZONE) ? inOB : crossOB;
+         bool sigOS   = (InpRSITrig == RSI_WHILE_IN_ZONE) ? inOS : crossOS;
+
+         if(sigOB || sigOS)
+           {
+            if(InpRSIDir == RSI_BOTH)
+              {
+               allowBuy  = true;
+               allowSell = true;
+              }
+            else if(InpRSIDir == RSI_A_OBSELL)
+              {
+               if(sigOB) allowSell = true;
+               if(sigOS) allowBuy  = true;
+              }
+            else // RSI_B_OBBUY
+              {
+               if(sigOB) allowBuy  = true;
+               if(sigOS) allowSell = true;
+              }
+            trigTxt = (StringLen(trigTxt) > 0 ? trigTxt + "+" : "") + "RSI " + DoubleToString(rCur, 1);
+           }
+        }
+     }
+
+   if(allowBuy || allowSell)
+      PlaceStraddle(allowBuy, allowSell, trigTxt);
   }
 
 //+------------------------------------------------------------------+
@@ -147,6 +231,20 @@ double GetATR()
    if(CopyBuffer(atrHandle, 0, 1, 1, buf) < 1)
       return 0.0;
    return buf[0];
+  }
+
+//+------------------------------------------------------------------+
+//| อ่านค่า RSI ของแท่งที่ปิด (index 1) และแท่งก่อนหน้า (index 2)       |
+//+------------------------------------------------------------------+
+bool GetRSI(double &cur, double &prev)
+  {
+   double buf[];
+   ArraySetAsSeries(buf, true);
+   if(CopyBuffer(rsiHandle, 0, 1, 2, buf) < 2)
+      return false;
+   cur  = buf[0]; // แท่งที่เพิ่งปิด (index 1)
+   prev = buf[1]; // แท่งก่อนหน้า (index 2)
+   return true;
   }
 
 //+------------------------------------------------------------------+
@@ -189,8 +287,11 @@ double CalcLot(double slDistancePrice)
 //+------------------------------------------------------------------+
 //| วาง Buy Stop + Sell Stop คร่อมราคาปิดแท่งข่าว                      |
 //+------------------------------------------------------------------+
-void PlaceStraddle(datetime cycleBar)
+void PlaceStraddle(bool allowBuy, bool allowSell, string trigTxt)
   {
+   if(!allowBuy && !allowSell)
+      return;
+
    double atr = GetATR();
    if(atr <= 0.0)
      {
@@ -267,18 +368,24 @@ void PlaceStraddle(datetime cycleBar)
       expiration = TimeCurrent() + (datetime)InpExpireMinutes * 60;
      }
 
-   string cmt = InpComment;
+   string cmt = StringLen(trigTxt) > 0 ? InpComment + " " + trigTxt : InpComment;
 
-   // วาง Buy Stop
-   if(!trade.BuyStop(lot, buyPrice, _Symbol, buySL, buyTP, typeTime, expiration, cmt))
-      PrintFormat("วาง Buy Stop ไม่สำเร็จ err=%d", trade.ResultRetcode());
-   else
-      PrintFormat("Buy Stop @%.*f SL=%.*f TP=%.*f lot=%.2f", digits, buyPrice, digits, buySL, digits, buyTP, lot);
+   // วาง Buy Stop (เฉพาะฝั่งที่อนุญาต)
+   if(allowBuy)
+     {
+      if(!trade.BuyStop(lot, buyPrice, _Symbol, buySL, buyTP, typeTime, expiration, cmt))
+         PrintFormat("วาง Buy Stop ไม่สำเร็จ err=%d", trade.ResultRetcode());
+      else
+         PrintFormat("[%s] Buy Stop @%.*f SL=%.*f TP=%.*f lot=%.2f", trigTxt, digits, buyPrice, digits, buySL, digits, buyTP, lot);
+     }
 
-   // วาง Sell Stop
-   if(!trade.SellStop(lot, sellPrice, _Symbol, sellSL, sellTP, typeTime, expiration, cmt))
-      PrintFormat("วาง Sell Stop ไม่สำเร็จ err=%d", trade.ResultRetcode());
-   else
-      PrintFormat("Sell Stop @%.*f SL=%.*f TP=%.*f lot=%.2f", digits, sellPrice, digits, sellSL, digits, sellTP, lot);
+   // วาง Sell Stop (เฉพาะฝั่งที่อนุญาต)
+   if(allowSell)
+     {
+      if(!trade.SellStop(lot, sellPrice, _Symbol, sellSL, sellTP, typeTime, expiration, cmt))
+         PrintFormat("วาง Sell Stop ไม่สำเร็จ err=%d", trade.ResultRetcode());
+      else
+         PrintFormat("[%s] Sell Stop @%.*f SL=%.*f TP=%.*f lot=%.2f", trigTxt, digits, sellPrice, digits, sellSL, digits, sellTP, lot);
+     }
   }
 //+------------------------------------------------------------------+
