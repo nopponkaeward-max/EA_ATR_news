@@ -73,6 +73,12 @@ lotRatio = input.float(100.0, title="1 Lot Ratio ($/price)", minval=0.001, group
            tooltip="มูลค่า $ ต่อ 1 หน่วยราคา ต่อ 1 lot — เช่น XAUUSD = 100")
 maxOpenTrades = input.int(0, title="Max Concurrent Trades (0 = unlimited)", minval=0, group="Risk")
 
+// --- Order Management ---
+oneTradeOnly = input.bool(false, title="One Trade At A Time", group="Order Management",
+               tooltip="ถ้ายังมีออเดอร์ (position) หรือ pending ค้างอยู่ ห้ามเริ่มชุดใหม่")
+ocoCancel    = input.bool(false, title="OCO — cancel opposite on fill", group="Order Management",
+               tooltip="เมื่อฝั่งหนึ่งถูกทริก (เปิดเป็นออเดอร์) ให้ยกเลิก pending อีกฝั่งทันที")
+
 // --- Display & Stats ---
 showTradePath     = input.bool(true,  title=" Show Trade Path Lines",       group="Display & Stats", display=display.none)
 showPendingDraw   = input.bool(true,  title=" Show Pending Straddle Lines",  group="Display & Stats", display=display.none)
@@ -384,6 +390,7 @@ if barstate.isconfirmed
                     f_closeTrade(i, closePx, rVal)
 
     // 6.2 ----- ตรวจ pending: trigger ก่อน แล้วค่อย expire -----
+    bool triggeredNow = false
     if array.size(pLevel) > 0
         for i = array.size(pLevel) - 1 to 0
             bool  isBuyP = array.get(pIsBuy, i)
@@ -422,7 +429,8 @@ if barstate.isconfirmed
                 array.push(oSLpts, slD)
                 array.push(oBar,   bar_index)
                 array.push(oTime,  time)
-                // ** ไม่ลบ pending อีกฝั่ง ** เอาเฉพาะฝั่งที่ถูกทริกออกจากคิว
+                triggeredNow := true
+                // เอาเฉพาะฝั่งที่ถูกทริกออกจากคิว (การยกเลิกอีกฝั่งทำใน OCO ด้านล่าง)
                 array.remove(pIsBuy, i)
                 array.remove(pLevel, i)
                 array.remove(pSLd,   i)
@@ -444,10 +452,26 @@ if barstate.isconfirmed
                     array.remove(pBar,   i)
                     array.remove(pTime,  i)
 
+    // 6.2b ----- OCO: ฝั่งหนึ่งถูกทริก -> ยกเลิก pending อีกฝั่งทั้งหมด -----
+    if ocoCancel and triggeredNow and array.size(pLevel) > 0
+        for i = array.size(pLevel) - 1 to 0
+            regLabel(label.new(x=bar_index, y=array.get(pLevel, i), text="⤫ OCO",
+                               style=label.style_label_center, color=color.new(color.gray, 65),
+                               textcolor=color.new(color.white, 25), size=size.tiny))
+        array.clear(pIsBuy)
+        array.clear(pLevel)
+        array.clear(pSLd)
+        array.clear(pTPd)
+        array.clear(pExpire)
+        array.clear(pBar)
+        array.clear(pTime)
+
     // 6.3 ----- วาง pending straddle ใหม่ ตาม Entry Mode -----
     // ตัดสินสัญญาณ + ฝั่งที่อนุญาต
     bool newsTrig = useNews and isNewsClose
     bool rsiTrig  = useRSI  and isTradeDay and (rsiSigOB or rsiSigOS)
+    // One trade at a time: มี position/pending ค้างอยู่ -> ไม่เริ่มชุดใหม่
+    bool blockNew = oneTradeOnly and (array.size(oEntry) > 0 or array.size(pLevel) > 0)
 
     bool allowBuy  = false
     bool allowSell = false
@@ -468,7 +492,7 @@ if barstate.isconfirmed
             allowSell := allowSell or rsiSigOS
         trigTxt := (str.length(trigTxt) > 0 ? trigTxt + " + " : "") + "RSI " + str.tostring(rsiVal, "#.#")
 
-    if (newsTrig or rsiTrig) and (allowBuy or allowSell) and not na(atrVal) and atrVal > 0
+    if (newsTrig or rsiTrig) and (allowBuy or allowSell) and not blockNew and not na(atrVal) and atrVal > 0
         float anchor   = close
         float entryDist = atrVal * entryMult
         float slDist    = atrVal * slMult
@@ -1122,6 +1146,11 @@ if showSettingsTable and barstate.islast
     rowBg := ri % 2 == 1 ? lxRowA : lxRowB
     table.cell(settingsTbl, 0, ri, "Max Concurrent", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
     table.cell(settingsTbl, 1, ri, maxOpenTrades == 0 ? "∞" : str.tostring(maxOpenTrades), text_color=lxText, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
+    ri += 1
+    rowBg := ri % 2 == 1 ? lxRowA : lxRowB
+    table.cell(settingsTbl, 0, ri, "1-Trade · OCO", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
+    table.cell(settingsTbl, 1, ri, (oneTradeOnly ? "ON" : "off") + " · " + (ocoCancel ? "ON" : "off"),
+               text_color=(oneTradeOnly or ocoCancel) ? lxCyan : lxDimTx, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
     ri += 1
 
     // Stat period

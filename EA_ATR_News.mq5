@@ -72,6 +72,8 @@ input double   InpMinLot          = 0.01;    // ลอตขั้นต่ำ�
 input double   InpMaxLot          = 5.0;     // ลอตสูงสุดที่ยอมให้เปิด
 input int      InpExpireMinutes   = 60;      // นาทีที่ pending จะหมดอายุ (0 = ไม่หมดอายุ)
 input int      InpMaxSpreadPoints = 0;       // สเปรดสูงสุดที่ยอมวาง (points, 0 = ปิดการเช็ก)
+input bool     InpOneTradeAtATime = false;   // เปิดได้ครั้งละ 1 ชุด (มี position/pending ค้าง ห้ามวางใหม่)
+input bool     InpOCO             = false;   // OCO: ฝั่งหนึ่งถูกเปิด -> ยกเลิก pending อีกฝั่ง
 input long     InpMagicNumber     = 20250911;// Magic Number
 input string   InpComment         = "ATR_News";
 
@@ -146,10 +148,63 @@ bool IsTradingDay(const MqlDateTime &dt)
   }
 
 //+------------------------------------------------------------------+
+//| นับ position ของ EA นี้ (ตาม magic + symbol)                       |
+//+------------------------------------------------------------------+
+int CountPositions()
+  {
+   int c = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) == InpMagicNumber &&
+         PositionGetString(POSITION_SYMBOL) == _Symbol)
+         c++;
+     }
+   return c;
+  }
+
+//+------------------------------------------------------------------+
+//| นับ pending order ของ EA นี้                                      |
+//+------------------------------------------------------------------+
+int CountPendingOrders()
+  {
+   int c = 0;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      ulong tk = OrderGetTicket(i);
+      if(tk == 0) continue;
+      if(OrderGetInteger(ORDER_MAGIC) == InpMagicNumber &&
+         OrderGetString(ORDER_SYMBOL) == _Symbol)
+         c++;
+     }
+   return c;
+  }
+
+//+------------------------------------------------------------------+
+//| ลบ pending order ทั้งหมดของ EA นี้ (ใช้กับ OCO)                    |
+//+------------------------------------------------------------------+
+void DeleteAllPendings()
+  {
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      ulong tk = OrderGetTicket(i);
+      if(tk == 0) continue;
+      if(OrderGetInteger(ORDER_MAGIC) == InpMagicNumber &&
+         OrderGetString(ORDER_SYMBOL) == _Symbol)
+         trade.OrderDelete(tk);
+     }
+  }
+
+//+------------------------------------------------------------------+
 //| OnTick                                                           |
 //+------------------------------------------------------------------+
 void OnTick()
   {
+   // --- OCO: ถ้ามี position เปิดแล้ว -> ยกเลิก pending ที่เหลือ (อีกฝั่ง) ---
+   if(InpOCO && CountPositions() > 0 && CountPendingOrders() > 0)
+      DeleteAllPendings();
+
    // เวลาเปิดของแท่งปัจจุบัน (index 0) บน TF ที่กำหนด
    datetime curBarOpen = iTime(_Symbol, InpEntryTF, 0);
    if(curBarOpen == 0)
@@ -165,6 +220,10 @@ void OnTick()
    TimeToStruct(curBarOpen, bt);
 
    if(!IsTradingDay(bt))
+      return;
+
+   // --- One trade at a time: มี position หรือ pending ค้างอยู่ -> ไม่เริ่มชุดใหม่ ---
+   if(InpOneTradeAtATime && (CountPositions() > 0 || CountPendingOrders() > 0))
       return;
 
    bool useNews = (InpEntryMode == ENTRY_NEWS || InpEntryMode == ENTRY_NEWS_RSI);
