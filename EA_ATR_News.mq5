@@ -27,7 +27,8 @@ enum ENUM_ENTRY_MODE
 enum ENUM_RSI_TRIG
   {
    RSI_ON_CROSS      = 0, // ตัดเข้าโซน (กันวางซ้ำ)
-   RSI_WHILE_IN_ZONE = 1  // ทุกแท่งที่อยู่ในโซน
+   RSI_ON_EXIT       = 1, // กลับมาตัดออกจากโซนครั้งแรก (reversal)
+   RSI_WHILE_IN_ZONE = 2  // ทุกแท่งที่อยู่ในโซน
   };
 enum ENUM_RSI_DIR
   {
@@ -249,10 +250,12 @@ void OnTick()
         {
          bool inOB    = rCur >= InpRSIOB;
          bool inOS    = rCur <= InpRSIOS;
-         bool crossOB = inOB && rPrev <  InpRSIOB;
-         bool crossOS = inOS && rPrev >  InpRSIOS;
-         bool sigOB   = (InpRSITrig == RSI_WHILE_IN_ZONE) ? inOB : crossOB;
-         bool sigOS   = (InpRSITrig == RSI_WHILE_IN_ZONE) ? inOS : crossOS;
+         bool crossOB = inOB && rPrev <  InpRSIOB;      // ตัดขึ้นเข้าโซน OB
+         bool crossOS = inOS && rPrev >  InpRSIOS;      // ตัดลงเข้าโซน OS
+         bool exitOB  = (rCur < InpRSIOB) && (rPrev >= InpRSIOB); // ตัดลงทะลุ OB กลับมา
+         bool exitOS  = (rCur > InpRSIOS) && (rPrev <= InpRSIOS); // ตัดขึ้นทะลุ OS กลับมา
+         bool sigOB   = (InpRSITrig == RSI_WHILE_IN_ZONE) ? inOB : (InpRSITrig == RSI_ON_EXIT) ? exitOB : crossOB;
+         bool sigOS   = (InpRSITrig == RSI_WHILE_IN_ZONE) ? inOS : (InpRSITrig == RSI_ON_EXIT) ? exitOS : crossOS;
 
          if(sigOB || sigOS)
            {

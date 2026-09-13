@@ -31,8 +31,8 @@ rsiTF     = input.timeframe("", title="RSI TF (ว่าง=TF กราฟ)",  
 rsiOB     = input.float(70.0, title="Overbought",       minval=1, maxval=100, group="RSI Entry", inline="r1")
 rsiOS     = input.float(30.0, title="Oversold",         minval=0, maxval=99,  group="RSI Entry", inline="r1")
 rsiTrigMode = input.string("On Cross Into Zone", title="RSI Trigger",
-            options=["On Cross Into Zone", "While In Zone"], group="RSI Entry",
-            tooltip="On Cross Into Zone = ทริกตอน RSI ตัดเข้าโซน (กันวางซ้ำทุกแท่ง)\nWhile In Zone = ทริกทุกแท่งที่ RSI ยังอยู่ในโซน")
+            options=["On Cross Into Zone", "On Exit Zone (reversal)", "While In Zone"], group="RSI Entry",
+            tooltip="On Cross Into Zone = ทริกตอน RSI ตัดเข้าโซน (กันวางซ้ำทุกแท่ง)\nOn Exit Zone (reversal) = ทริกตอน RSI กลับมาตัดออกจากโซนครั้งแรก (สัญญาณกลับตัว: OS เด้งขึ้นทะลุ / OB ย่อลงทะลุ)\nWhile In Zone = ทริกทุกแท่งที่ RSI ยังอยู่ในโซน")
 rsiDir    = input.string("Both (straddle)", title="RSI Direction",
             options=["Both (straddle)", "A: OB→Sell / OS→Buy", "B: OB→Buy / OS→Sell"], group="RSI Entry",
             tooltip="เลือกว่าสัญญาณ OB/OS จะวางฝั่งไหน\nBoth = วางทั้ง 2 ฝั่งเหมือนโหมดข่าว")
@@ -284,9 +284,12 @@ bool inOB = not na(rsiVal) and rsiVal >= rsiOB
 bool inOS = not na(rsiVal) and rsiVal <= rsiOS
 bool crossOB = inOB and not (na(rsiVal[1]) or rsiVal[1] >= rsiOB)   // RSI ตัดขึ้นเข้าโซน OB
 bool crossOS = inOS and not (na(rsiVal[1]) or rsiVal[1] <= rsiOS)   // RSI ตัดลงเข้าโซน OS
+// Exit zone (reversal): RSI กลับมาตัดออกจากโซนครั้งแรก
+bool exitOB  = not na(rsiVal) and not na(rsiVal[1]) and rsiVal <  rsiOB and rsiVal[1] >= rsiOB // ตัดลงทะลุ OB กลับมา
+bool exitOS  = not na(rsiVal) and not na(rsiVal[1]) and rsiVal >  rsiOS and rsiVal[1] <= rsiOS // ตัดขึ้นทะลุ OS กลับมา
 
-bool rsiSigOB = rsiTrigMode == "While In Zone" ? inOB : crossOB
-bool rsiSigOS = rsiTrigMode == "While In Zone" ? inOS : crossOS
+bool rsiSigOB = rsiTrigMode == "While In Zone" ? inOB : rsiTrigMode == "On Exit Zone (reversal)" ? exitOB : crossOB
+bool rsiSigOS = rsiTrigMode == "While In Zone" ? inOS : rsiTrigMode == "On Exit Zone (reversal)" ? exitOS : crossOS
 
 bool useNews = entryMode == "1. News Time" or entryMode == "3. News + RSI"
 bool useRSI  = entryMode == "2. RSI OB/OS"  or entryMode == "3. News + RSI"
@@ -1083,7 +1086,7 @@ if showSettingsTable and barstate.islast
         ri += 1
         rowBg := ri % 2 == 1 ? lxRowA : lxRowB
         table.cell(settingsTbl, 0, ri, "RSI Trig · Dir", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
-        table.cell(settingsTbl, 1, ri, (rsiTrigMode == "While In Zone" ? "Zone" : "Cross") + " · " + rsiDir,
+        table.cell(settingsTbl, 1, ri, (rsiTrigMode == "While In Zone" ? "Zone" : rsiTrigMode == "On Exit Zone (reversal)" ? "Exit" : "Enter") + " · " + rsiDir,
                    text_color=lxText, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
         ri += 1
 

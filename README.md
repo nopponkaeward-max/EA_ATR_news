@@ -20,7 +20,10 @@
 | **3. News + RSI** | ทริกด้วยอย่างใดอย่างหนึ่ง |
 
 **RSI settings:** `Period`, `TF`, `Overbought` (70), `Oversold` (30)
-- **Trigger**: `On Cross Into Zone` (ทริกตอนตัดเข้าโซน กันวางซ้ำทุกแท่ง) หรือ `While In Zone` (ทุกแท่งที่ยังอยู่ในโซน)
+- **Trigger**:
+  - `On Cross Into Zone` — ทริกตอน RSI **ตัดเข้า** โซน OB/OS (กันวางซ้ำ)
+  - `On Exit Zone (reversal)` — ทริกตอน RSI **กลับมาตัดออก** จากโซนครั้งแรก (สัญญาณกลับตัว: OS เด้งขึ้นทะลุ 30 / OB ย่อลงทะลุ 70)
+  - `While In Zone` — ทุกแท่งที่ RSI ยังอยู่ในโซน
 - **Direction**:
   - `Both (straddle)` — วางทั้ง 2 ฝั่ง (ค่าเริ่ม เหมือนโหมดข่าว)
   - `A: OB→Sell / OS→Buy` — สวนทาง (mean reversion)
