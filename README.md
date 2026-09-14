@@ -6,6 +6,7 @@
 |---|---|---|
 | `EA_ATR_News.mq5` | MetaTrader 5 | เทรดจริง/อัตโนมัติ (วางออเดอร์จริง) |
 | `ATR_News_Straddle.pine` | TradingView (Pine v6) | จำลอง/ดูสถิติ + **ตาราง stat** (Main / By-Day / Daily / Monthly / Settings) |
+| `StatDayTrade.pine` | TradingView (Pine v6) | โมเดล day-trade เชิงสถิติ (VWAP σ-bands + Z-score) — ตาราง stat ชุดเดียวกัน + ตาราง **Risk:Reward** (Expectancy / PF / Verdict) และ visual เข้า-ออกออเดอร์แบบเดียวกับ ATR_News_Straddle |
 
 ---
 
