@@ -250,9 +250,12 @@ float sd   = ta.stdev(close, sdLen)
 float sdPrev = sd[1]
 
 // σ-bands
-float up1 = mean + sd,       dn1 = mean - sd
-float up2 = mean + sd * 2.0, dn2 = mean - sd * 2.0
-float up3 = mean + sd * 3.0, dn3 = mean - sd * 3.0
+float up1 = mean + sd
+float dn1 = mean - sd
+float up2 = mean + sd * 2.0
+float dn2 = mean - sd * 2.0
+float up3 = mean + sd * 3.0
+float dn3 = mean - sd * 3.0
 
 // Z-score ปัจจุบัน
 float zscore = sd > 0 ? (close - mean) / sd : 0.0
@@ -354,10 +357,6 @@ f_closeTrade(float exitPx, float rVal) =>
     if showTradePath
         regLine(line.new(x1=posBar, y1=posEntry, x2=bar_index, y2=exitPx,
                          color=pathCol, width=1, style=line.style_dashed))
-    inTrade  := false
-    posEntry := na
-    posSL    := na
-    posTP    := na
 
 bool canEnter = inSession and dayOK and not inTrade and barstate.isconfirmed and (not oneTradeDay or tradesToday < 1)
 
@@ -431,6 +430,11 @@ if inTrade and barstate.isconfirmed and bar_index > posBar
             float diff = posIsBuy ? (exitPx - posEntry) : (posEntry - exitPx)
             rVal := oneR > 0 ? diff / oneR : 0.0
         f_closeTrade(exitPx, rVal)
+        // reset state ที่ global scope (Pine ไม่ให้แก้ตัวแปร global ในฟังก์ชัน)
+        inTrade  := false
+        posEntry := na
+        posSL    := na
+        posTP    := na
 
 // ---- trigger markers (ทิศหลัง Reverse แล้ว) ----
 plotshape(showSignals and sigLong  and barstate.isconfirmed, title="Long Signal",  style=shape.triangleup,
