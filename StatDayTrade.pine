@@ -33,6 +33,7 @@ entryModeStat= input.string("Mean-Reversion", title="โหมดเข้า", 
 entryZ       = input.float(2.0, title="Z เข้า Mean-Reversion (σ)", minval=0.5, maxval=4.0, step=0.1, group=grpStat, tooltip="ราคาต้องห่างจากค่ากลางกี่ SD ถึงจะพิจารณาสวนกลับ (มาตรฐาน 2σ ≈ 95%)")
 brkZ         = input.float(1.0, title="Z เข้า Breakout (σ)", minval=0.3, maxval=3.0, step=0.1, group=grpStat, tooltip="ราคาปิดต้องทะลุกี่ SD ถึงจะเข้าไม้ breakout")
 volExpand    = input.float(1.05,title="ต้องมี σ ขยายตัว ≥ (เท่า)", minval=1.0, maxval=2.0, step=0.01, group=grpStat, tooltip="Breakout: σ ปัจจุบันต้อง ≥ σ ก่อนหน้า × ค่านี้ (กรอง volatility clustering)")
+reverseTrade = input.bool(false, title="Reverse Trade (กลับทิศสัญญาณ)", group=grpStat, tooltip="เปิด = สลับทิศทุกสัญญาณ Long ↔ Short\nใช้ทดสอบมุมกลับของโมเดล เช่น Mean-Reversion จะกลายเป็นเข้าตามโมเมนตัม (SL/TP คำนวณตามทิศใหม่)")
 
 grpSess = "▶ Day-Trade Session"
 sessTime    = input.session("0000-2359", title="ช่วงเวลาเทรด (Session)", group=grpSess, tooltip="อนุญาตเปิดไม้เฉพาะในช่วงนี้ (เวลาโบรก) — BTC 24 ชม. ใช้ค่าเริ่มต้นได้")
@@ -311,6 +312,10 @@ bool boShort = entryModeStat == "Breakout" and zscore <= -brkZ and close < open 
 bool rawLong  = mrLong  or boLong
 bool rawShort = mrShort or boShort
 
+// Reverse Trade: สลับทิศสัญญาณ Long ↔ Short
+bool sigLong  = reverseTrade ? rawShort : rawLong
+bool sigShort = reverseTrade ? rawLong  : rawShort
+
 // ==========================================
 // --- 9. TRADE STATE MACHINE (1 position) ---
 // ==========================================
@@ -357,8 +362,8 @@ f_closeTrade(float exitPx, float rVal) =>
 bool canEnter = inSession and dayOK and not inTrade and barstate.isconfirmed and (not oneTradeDay or tradesToday < 1)
 
 // --- OPEN (market เมื่อแท่งปิด) ---
-if canEnter and (rawLong or rawShort)
-    posIsBuy := rawLong
+if canEnter and (sigLong or sigShort)
+    posIsBuy := sigLong
     posEntry := close
     float oneR = atr * atrMult
     posSL := posIsBuy ? posEntry - oneR : posEntry + oneR
@@ -427,10 +432,10 @@ if inTrade and barstate.isconfirmed and bar_index > posBar
             rVal := oneR > 0 ? diff / oneR : 0.0
         f_closeTrade(exitPx, rVal)
 
-// ---- trigger markers ----
-plotshape(showSignals and rawLong  and barstate.isconfirmed, title="Long Signal",  style=shape.triangleup,
+// ---- trigger markers (ทิศหลัง Reverse แล้ว) ----
+plotshape(showSignals and sigLong  and barstate.isconfirmed, title="Long Signal",  style=shape.triangleup,
           location=location.belowbar, color=color.new(cBull, 0), size=size.tiny)
-plotshape(showSignals and rawShort and barstate.isconfirmed, title="Short Signal", style=shape.triangledown,
+plotshape(showSignals and sigShort and barstate.isconfirmed, title="Short Signal", style=shape.triangledown,
           location=location.abovebar, color=color.new(cBear, 0), size=size.tiny)
 
 // ---- Plot เส้น TP/SL/Entry ของไม้ที่ยังเปิดอยู่ ----
@@ -572,7 +577,7 @@ if showRRtable and barstate.islast
             vC := lxRed
 
     table.cell(rrTable, 0, 0, "◆  RISK : REWARD", text_color=lxTitleTx, text_size=size.small, bgcolor=lxHeadBg)
-    table.cell(rrTable, 0, 1, entryModeStat + " · 1:" + str.tostring(rrRatio,"#.#") + " · " + periodStr,
+    table.cell(rrTable, 0, 1, entryModeStat + (reverseTrade ? " REV" : "") + " · 1:" + str.tostring(rrRatio,"#.#") + " · " + periodStr,
                text_color=lxMuted, text_size=size.tiny, bgcolor=lxSubBg)
     table.cell(rrTable, 0, 2, "Trades", text_color=lxMuted, text_size=size.tiny, bgcolor=lxRowA, text_halign=text.align_left)
     table.cell(rrTable, 1, 2, total == 0 ? "-" : str.tostring(nW)+"W · "+str.tostring(nL)+"L", text_color=lxText, text_size=size.small, bgcolor=lxRowA, text_halign=text.align_right)
@@ -681,7 +686,7 @@ if (showStatsTable or showDayTable) and barstate.islast
     color strkCol  = streak > 0 ? lxGreen : streak < 0 ? lxRed : lxMuted
     string mxWDate = maxW > 0 ? str.tostring(dayofmonth(maxWS,tzStr)) + " " + f_monthShort(month(maxWS,tzStr)) + "–" + str.tostring(dayofmonth(maxWE,tzStr)) + " " + f_monthShort(month(maxWE,tzStr)) : "-"
     string mxLDate = maxL > 0 ? str.tostring(dayofmonth(maxLS,tzStr)) + " " + f_monthShort(month(maxLS,tzStr)) + "–" + str.tostring(dayofmonth(maxLE,tzStr)) + " " + f_monthShort(month(maxLE,tzStr)) : "-"
-    string zSub    = entryModeStat == "Mean-Reversion" ? "MR ±" + str.tostring(entryZ, "#.#") + "σ" : "BO ±" + str.tostring(brkZ, "#.#") + "σ"
+    string zSub    = (entryModeStat == "Mean-Reversion" ? "MR ±" + str.tostring(entryZ, "#.#") + "σ" : "BO ±" + str.tostring(brkZ, "#.#") + "σ") + (reverseTrade ? " · REV" : "")
 
     if showStatsTable
         table.cell(statsTable, 0, 0,  "◆  STAT DAY-TRADE",       text_color=lxTitleTx, text_size=size.small,  bgcolor=lxHeadBg)
@@ -1003,6 +1008,11 @@ if showSettingsTable and barstate.islast
                : "±" + str.tostring(brkZ, "#.#") + "σ · σ×" + str.tostring(volExpand, "#.##"),
                text_color=lxText, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
     ri += 1
+    rowBg := ri % 2 == 1 ? lxRowA : lxRowB
+    table.cell(settingsTbl, 0, ri, "Reverse Trade", text_color=lxMuted, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_left)
+    table.cell(settingsTbl, 1, ri, reverseTrade ? "ON (Long↔Short)" : "off",
+               text_color=reverseTrade ? lxAmber : lxDimTx, text_size=size.tiny, bgcolor=rowBg, text_halign=text.align_right)
+    ri += 1
 
     // Session section
     table.cell(settingsTbl, 0, ri, "─── Session / Days ───", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg, text_halign=text.align_left)
@@ -1068,5 +1078,5 @@ if showSettingsTable and barstate.islast
 // --- 19. ALERTS ---
 // ==========================================
 
-alertcondition(rawLong,  title="Stat LONG signal",  message="Stat Day-Trade: LONG signal")
-alertcondition(rawShort, title="Stat SHORT signal", message="Stat Day-Trade: SHORT signal")
+alertcondition(sigLong,  title="Stat LONG signal",  message="Stat Day-Trade: LONG signal")
+alertcondition(sigShort, title="Stat SHORT signal", message="Stat Day-Trade: SHORT signal")
